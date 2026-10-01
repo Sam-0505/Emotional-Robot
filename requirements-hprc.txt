@@ -1,0 +1,6 @@
+# Python dependencies for the Grace data-preparation and training jobs.
+# The package versions are declared in pyproject.toml to avoid two lists drifting.
+-e .[data,perception]
+
+# ffmpeg, ffprobe, and git-lfs are executables, not Python packages.
+# Load/install them on Grace separately; see the README Grace setup section.

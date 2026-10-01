@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachy-emotions-prototype"
+version = "0.1.0"
+description = "CREMA-D audio-visual expression perception and guarded Reachy Mini simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.optional-dependencies]
+data = ["opencv-python-headless>=4.8", "numpy>=1.24"]
+perception = [
+  "torch>=2.2",
+  "transformers>=4.45",
+  "accelerate>=0.34",
+  "peft>=0.13",
+  "numpy>=1.24",
+  "soundfile>=0.12",
+  "Pillow>=10",
+  "timm>=1.0",
+  "einops>=0.8",
+  "open-clip-torch>=2.26",
+]
+runtime = ["openai>=1.50", "requests>=2.31", "reachy-mini>=1.8.4"]
+all = [
+  "opencv-python-headless>=4.8",
+  "numpy>=1.24",
+  "torch>=2.2",
+  "transformers>=4.45",
+  "accelerate>=0.34",
+  "peft>=0.13",
+  "soundfile>=0.12",
+  "Pillow>=10",
+  "timm>=1.0",
+  "einops>=0.8",
+  "open-clip-torch>=2.26",
+  "openai>=1.50",
+  "requests>=2.31",
+  "reachy-mini>=1.8.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -42,6 +42,8 @@ python scripts/prepare_cremad.py /path/to/CREMA-D data/cremad
 python scripts/prepare_cremad.py /path/to/CREMA-D data/cremad --validate
 ```
 
+Preparation logs the first clip, every 100 clips by default, and the final clip with elapsed time and estimated time remaining. It then announces the separate manifest/media validation phase. Use `--log-every 10` for more frequent progress in Colab. Logs appear while the command runs. A failed preparation does not create a valid manifest or resume from partial output.
+
 For the single verified local test pair, run `python scripts/smoke_media.py`. It checks the video and WAV bytes against the official Git LFS pointers, their media headers, and the CREMA-D vote tables without needing FFmpeg. On a host with FFmpeg and OpenCV, `python scripts/smoke_media.py --decode` also exercises the production three-frame/audio extraction in a temporary directory. A dry run of that exact clip is:
 
 ```bash

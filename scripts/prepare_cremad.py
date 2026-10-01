@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -24,15 +25,21 @@ def main() -> int:
     parser.add_argument("--audio-dir", type=Path, help="Directory with verified WAV files for --clip-id smoke tests")
     parser.add_argument("--dry-run", action="store_true", help="Check metadata/media presence and show split counts without decoding or writing")
     parser.add_argument("--validate", action="store_true", help="Validate an existing output manifest and file hashes")
+    parser.add_argument("--log-every", type=int, default=100,
+                        help="Log extraction progress every N clips (default: 100)")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         if args.validate:
             path = args.output_root / "manifest.jsonl"
+            logging.info("Validating prepared manifest and media hashes: %s", path)
             result = {"manifest_path": str(path), "split_clips": validate_manifest(load_manifest(path), root=args.output_root, verify_files=True)}
+            logging.info("Prepared manifest validation passed")
         else:
             result = prepare_dataset(args.dataset_root, args.output_root, dry_run=args.dry_run,
                                      seed=args.seed, limit=args.limit, clip_ids=args.clip_id,
-                                     video_dir=args.video_dir, audio_dir=args.audio_dir)
+                                     video_dir=args.video_dir, audio_dir=args.audio_dir,
+                                     log_every=args.log_every)
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
         parser.exit(2, f"CREMA-D preparation failed: {exc}\n")
     print(json.dumps(result, indent=2, sort_keys=True))

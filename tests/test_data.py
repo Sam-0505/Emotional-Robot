@@ -148,8 +148,12 @@ class CremaDatasetTests(unittest.TestCase):
         with patch("reachy_emotions.data.cremad.shutil.which", return_value="/fake/ffmpeg"), \
              patch("reachy_emotions.data.cremad._tool_versions", return_value={"ffmpeg": "test", "ffprobe": "test", "opencv": None}), \
              patch("reachy_emotions.data.cremad._video_duration_ms", return_value=1000), \
-             patch("reachy_emotions.data.cremad._extract", side_effect=fake_extract):
-            summary = prepare_dataset(self.root, output, seed=17, limit=1)
+             patch("reachy_emotions.data.cremad._extract", side_effect=fake_extract), \
+             self.assertLogs("reachy_emotions.data.cremad", level="INFO") as captured:
+            summary = prepare_dataset(self.root, output, seed=17, limit=1, log_every=1)
+        self.assertTrue(any("Extracted 1/1 clips" in line for line in captured.output))
+        self.assertTrue(any("Extraction complete; validating" in line for line in captured.output))
+        self.assertTrue(any("validation passed" in line for line in captured.output))
         records = load_manifest(output / "manifest.jsonl")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["source_dataset"], "CREMA-D")

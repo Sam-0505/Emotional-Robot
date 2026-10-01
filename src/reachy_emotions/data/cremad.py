@@ -9,15 +9,18 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import math
 import os
 import random
 import shutil
 import subprocess
 import sys
+import time
 import wave
 from array import array
 from collections import Counter
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -31,6 +34,7 @@ SOURCE_URL = "https://github.com/CheyneyComputerScience/CREMA-D"
 AUDIO_TARGET_RMS = 0.1
 AUDIO_MAX_GAIN = 4.0
 AUDIO_PEAK_CEILING = 0.95
+LOGGER = logging.getLogger(__name__)
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -531,7 +535,7 @@ def _extract(video: Path, source_audio: Path, output_root: Path, clip_id: str,
 def prepare_dataset(dataset_root: Path | str, output_root: Path | str, *, dry_run: bool = False,
                     seed: int = 42, limit: int | None = None, clip_ids: Iterable[str] | None = None,
                     video_dir: Path | str | None = None,
-                    audio_dir: Path | str | None = None) -> dict[str, Any]:
+                    audio_dir: Path | str | None = None, log_every: int = 100) -> dict[str, Any]:
     """Prepare paired examples and return counts/paths; dry-run writes nothing."""
     dataset_root = Path(dataset_root).expanduser().resolve()
     output_root = Path(output_root).expanduser().resolve()
@@ -539,6 +543,8 @@ def prepare_dataset(dataset_root: Path | str, output_root: Path | str, *, dry_ru
         raise FileNotFoundError(f"CREMA-D directory does not exist: {dataset_root}")
     if limit is not None and limit <= 0:
         raise ValueError("limit must be positive")
+    if log_every <= 0:
+        raise ValueError("log_every must be positive")
     requested = list(clip_ids) if clip_ids is not None else None
     if requested is not None and (not requested or len(requested) != len(set(requested))):
         raise ValueError("clip IDs must be nonempty and unique")
@@ -600,9 +606,11 @@ def prepare_dataset(dataset_root: Path | str, output_root: Path | str, *, dry_ru
         raise FileExistsError(f"Manifest already exists at {manifest}; use a fresh output directory for a new preparation run")
     pending_manifest = output_root / "manifest.jsonl.pending"
     records: list[dict[str, Any]] = []
+    started_at = time.monotonic()
+    LOGGER.info("Starting CREMA-D extraction: %d clips; output=%s", len(selected), output_root)
     try:
         with pending_manifest.open("w", encoding="utf-8") as stream:
-            for row in selected:
+            for index, row in enumerate(selected, 1):
                 clip_id = row["clip_id"]
                 video, source_audio = media[clip_id]
                 try:
@@ -613,8 +621,12 @@ def prepare_dataset(dataset_root: Path | str, output_root: Path | str, *, dry_ru
                     source_audio_path = source_audio.relative_to(dataset_root).as_posix()
                 except ValueError:
                     source_audio_path = str(source_audio)
-                duration_ms = _video_duration_ms(video)
-                extracted = _extract(video, source_audio, output_root, clip_id, duration_ms)
+                try:
+                    duration_ms = _video_duration_ms(video)
+                    extracted = _extract(video, source_audio, output_root, clip_id, duration_ms)
+                except Exception:
+                    LOGGER.exception("Extraction failed at clip %d/%d: %s", index, len(selected), clip_id)
+                    raise
                 record = {
                     "sample_id": clip_id,
                     "source_dataset": "CREMA-D",
@@ -644,7 +656,15 @@ def prepare_dataset(dataset_root: Path | str, output_root: Path | str, *, dry_ru
                 }
                 records.append(record)
                 stream.write(json.dumps(record, sort_keys=True) + "\n")
+                if index == 1 or index % log_every == 0 or index == len(selected):
+                    elapsed = time.monotonic() - started_at
+                    remaining = elapsed / index * (len(selected) - index)
+                    LOGGER.info("Extracted %d/%d clips (%.1f%%); latest=%s; elapsed=%s; ETA=%s",
+                                index, len(selected), 100 * index / len(selected), clip_id,
+                                timedelta(seconds=round(elapsed)), timedelta(seconds=round(remaining)))
+        LOGGER.info("Extraction complete; validating %d manifest records and output media hashes", len(records))
         validate_manifest(records, root=output_root, verify_files=True)
+        LOGGER.info("Manifest and output media validation passed")
         pending_manifest.replace(manifest)
         (output_root / "actor_splits.json").write_text(json.dumps(summary["split_actors"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
         (output_root / "split_balance.json").write_text(json.dumps(summary["split_balance"], indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -772,8 +772,12 @@ def validate_manifest(records: Iterable[dict[str, Any]], *, root: Path | str | N
             raise ValueError(f"Frame timestamps outside video duration for {sample_id}")
         if int(row["audio_sample_rate"]) != 16000 or int(row["audio_duration_ms"]) <= 0:
             raise ValueError(f"Invalid audio properties for {sample_id}")
-        if abs(int(row["audio_duration_ms"]) - int(duration)) > 1000:
-            raise ValueError(f"AV duration differs by over one second for {sample_id}")
+        duration_delta_ms = abs(int(row["audio_duration_ms"]) - int(duration))
+        if row.get("av_duration_delta_ms") is not None and int(row["av_duration_delta_ms"]) != duration_delta_ms:
+            raise ValueError(f"AV duration delta disagrees with media durations for {sample_id}")
+        if duration_delta_ms > 1000 and (row.get("av_alignment_status") != "review"
+                                         or row.get("paired_usable") is not False):
+            raise ValueError(f"AV duration differs by over one second without review exclusion for {sample_id}")
         if verify_files and base is not None:
             for relative, digest in zip(paths + [row["audio_path"]], hashes + [row["audio_sha256"]]):
                 candidate = (base / relative).resolve()

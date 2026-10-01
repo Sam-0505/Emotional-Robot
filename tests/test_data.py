@@ -308,6 +308,14 @@ class CremaDatasetTests(unittest.TestCase):
             validate_manifest([template, second])
         with self.assertRaisesRegex(ValueError, "AV duration"):
             validate_manifest([dict(template, audio_duration_ms=2100)])
+        reviewed = dict(template, audio_duration_ms=2100, av_duration_delta_ms=1100,
+                        visual_usable=True, audio_quality_status="accepted",
+                        av_alignment_status="review", paired_usable=False)
+        self.assertEqual(validate_manifest([reviewed]), {"train": 1})
+        with self.assertRaisesRegex(ValueError, "AV duration delta"):
+            validate_manifest([dict(reviewed, av_duration_delta_ms=1000)])
+        with self.assertRaisesRegex(ValueError, "Paired usability conflicts"):
+            validate_manifest([dict(reviewed, paired_usable=True)])
         with self.assertRaisesRegex(ValueError, "Media paths do not match"):
             validate_manifest([dict(template, audio_path="audio/another_clip.wav")])
         with self.assertRaisesRegex(ValueError, "Source audio does not match"):

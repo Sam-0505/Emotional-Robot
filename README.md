@@ -2,7 +2,7 @@
 
 An audio-visual acted-expression prototype for Reachy Mini. The unified U0 model pairs three face frames and matching speech from [CREMA-D](https://github.com/CheyneyComputerScience/CREMA-D). Frozen NVIDIA `Llama-3.1-Nemotron-Nano-VL-8B-V1` vision features and frozen WavLM speech features enter **one Nemotron decoder context**. A trainable audio projector and decoder LoRA learn jointly against `MultiModalVote`. Visual-only, audio-only, and late-fusion models remain comparison baselines. A small **agent harness** then asks a separate Nemotron reasoning model for a short response, validates its proposed text, Magpie speech style, and reviewed Reachy emotion move, and runs only approved effects.
 
-There is no physical robot in this project environment. The intended motion target is the official Reachy Mini MuJoCo simulator through the high-level SDK. The user verified the visual baseline's one-step LoRA training and fresh-process reload on a Colab A100 40 GB. The unified implementation has CPU tensor/autograd tests; its real GPU pilot, measured accuracy, Nebius call, Magpie deployment, and simulator run remain unverified. CREMA-D portrays *acted* expressions; this system does not determine someone's inner emotional state and is not a clinical tool.
+There is no physical robot in this project environment. The intended motion target is the official Reachy Mini MuJoCo simulator through the high-level SDK. The user reported successful visual-baseline and unified one-step pilots on a Colab A100 40 GB, including the unified projector/LoRA gradient checks, modality ablations, and exact fresh-process score reload. Held-out accuracy, the Nebius call, Magpie deployment, and simulator run remain unverified. CREMA-D portrays *acted* expressions; this system does not determine someone's inner emotional state and is not a clinical tool.
 
 ## Architecture
 
@@ -85,6 +85,8 @@ The implementation extends the existing VLM with waveform features; stock Nemotr
 
 The visual pooling changes the original token layout intentionally to keep the joint sequence small. Native 256 tokens per frame can be selected in a separate configuration/run if validation supports the additional cost. Gradient checkpointing is enabled by default. No automatic late-fusion fallback occurs on an out-of-memory error.
 
+The single-tile/no-thumbnail controls are set on the processor instance, not passed as unsupported call-time keywords. The wrapper checks that each frame produces one feature tile. After updating an older checkout that reported ignored tiling keywords, use `--stage verify` to recheck the saved pilot's scores without retraining.
+
 The same prepared manifest is reused. Training selects only synchronized, usable training clips with an unambiguous `MultiModalVote`; FaceVote/VoiceVote do not supervise U0. Missing faces are masked, and fewer than two usable frames, poor speech, or bad synchronization prevents a joint prediction. The decoder scores six fixed JSON completions; JSON is rendered from the selected label, so this is constrained classification, not unconstrained JSON generation or speech transcription.
 
 ### Colab: joint pilot with existing MyDrive data
@@ -103,6 +105,8 @@ After pulling the repository, run these notebook cells:
 The launcher uses the notebook's Python, reads `nemotron-revision.txt` and `wavlm-revision.txt`, reuses `cremad-prepared-run2/manifest.jsonl` and `huggingface-cache`, and saves everything under `MyDrive/reachy-av/unified-001`. It locates the repository's `src` directory for both notebook-side imports and training subprocesses; the perception dependencies must still be installed in the notebook's Python. Use `--base`, `--manifest`, or `--run-root` to override these paths. `--dry-run` prints the command without creating outputs. Logs stream into the notebook and a timestamped Drive file.
 
 The pilot performs one real optimizer step, checks nonzero finite gradients in both trainable components and no gradients in frozen weights, records feature shapes, step time and peak allocated VRAM, and checks that masking either modality affects scores. It saves `decoder_lora/`, `audio_projector.pt`, and `unified_metadata.json`, then reloads both trainable components in a fresh process and reproduces joint and ablated scores. Ablations verify wiring only; they do not establish learned reliance or accuracy. If training saved successfully but verification was interrupted, use `--stage verify`. Partial runs are never overwritten; use a new `--run-root` if needed.
+
+User-reported A100 pilot results: loss 1.1745, first-step time 54.26 seconds, peak allocated VRAM 17.19 GiB, gradient/ablation checks passed, and reload score difference 0.000000. These are feasibility results, not accuracy or steady-state throughput. Re-verify after the processor-settings correction above before full training.
 
 The equivalent portable command is:
 

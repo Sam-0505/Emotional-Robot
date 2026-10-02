@@ -28,6 +28,10 @@ class AudioVisualModel(nn.Module):
         self.audio = audio
         self.tokenizer = tokenizer
         self.processor = processor
+        # The pinned custom processor reads these instance attributes. Its
+        # Transformers fast-processor base filters them out as call-time kwargs.
+        self.processor.max_num_tiles = 1
+        self.processor.use_thumbnail = False
         self.extractor = extractor
         self.architecture = config.validate()
         hidden = visual.language_model.get_input_embeddings().weight.shape[1]
@@ -60,7 +64,7 @@ class AudioVisualModel(nn.Module):
         side = math.isqrt(self.architecture.visual_tokens_per_frame)
         for image in images:
             # One crop tile per frame bounds GPU cost and preserves frame order.
-            batch = self.processor([image], max_num_tiles=1, use_thumbnail=False)
+            batch = self.processor([image], return_tensors="pt")
             pixels = batch["pixel_values"].to(device=self.device, dtype=torch.bfloat16)
             features = self.visual.extract_feature(pixels)
             if features.ndim != 3 or features.shape[0] != 1:

@@ -88,7 +88,7 @@ Grand Prize $20,000 · 2nd $10,000 · 3rd $6,000 · four track winners (one NVID
 | VLM one-step fine-tuning feasibility and adapter reload | User-reported Colab A100 baseline step and reload passed; archive its artifacts/logs |
 | Audio encoder/head feasibility, license evidence, and reload | Scripted; real model step, reload, and weight-license evidence missing |
 | Paired audio-visual fusion feasibility and calibration | Implemented and unit-tested; real paired scores missing |
-| Unified audio-visual Nemotron extension | Joint input, projector/LoRA training, gradient/ablation/reload gates, calibration/evaluation, and harness path implemented; real joint GPU gate and measured quality pending |
+| Unified audio-visual Nemotron extension | Implemented; user-reported A100 joint optimizer/gradient/ablation/reload pilot passed at 17.19 GiB peak allocated VRAM; processor-fix re-verification and held-out quality pending |
 | Visual/audio/fusion held-out evaluation | Evaluation command implemented; real test metrics missing |
 | CREMA-D paired manifest, alignment checks, and actor-disjoint split | Implemented and unit-tested; user-reported Colab preparation completed in `cremad-prepared-run2`; archive its validation/provenance reports |
 | CREMA-D license and attribution record | Official terms linked in README; prepared output writes source commit and license/metadata hashes; archive the completed Colab run's records |

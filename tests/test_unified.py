@@ -271,6 +271,30 @@ class UnifiedTensorTests(unittest.TestCase):
         images = [torch.full((1, 4, 1), float(i + 1)) for i in range(3)]
         self.features = self.model.encode(images, [.1, .2, .3, .4])
 
+    def test_single_tile_settings_are_instance_attributes_not_call_kwargs(self):
+        from reachy_emotions.perception.unified_model import AudioVisualModel
+        torch = self.torch
+
+        class StrictProcessor:
+            max_num_tiles = 12
+            use_thumbnail = True
+
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, images, return_tensors=None):
+                # No **kwargs: the old unsupported call-time options fail here.
+                self.calls.append((self.max_num_tiles, self.use_thumbnail, return_tensors))
+                return {"pixel_values": images[0]}
+
+        processor = StrictProcessor()
+        model = AudioVisualModel(self.model.visual, self.model.audio, self.model.tokenizer,
+                                 processor, self.model.extractor, self.model.architecture)
+        images = [torch.full((1, 4, 1), float(i + 1)) for i in range(3)]
+        visual, _ = model.encode(images, [.1, .2, .3, .4])
+        self.assertEqual(processor.calls, [(1, False, "pt")] * 3)
+        self.assertEqual(tuple(visual.shape), (1, 12, 16))
+
     def test_shapes_loss_mask_and_modality_mask(self):
         visual, audio = self.features
         self.assertEqual(tuple(visual.shape), (1, 12, 16))

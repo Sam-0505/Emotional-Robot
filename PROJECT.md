@@ -1,7 +1,7 @@
 # Plan: Unified Audio-Visual Emotion Perception to Reachy Mini
 
 **Track:** Physical AI
-**Plan status:** Implementation started on 2026-09-29. On 2026-10-02 the target perception architecture changed from separate visual/audio classifiers with late fusion to a unified audio-visual language-model path inspired by Nano-EmoX. The joint wrapper, projector/LoRA training, gradient and modality-ablation gates, fresh-process checkpoint verification, calibration/evaluation, Colab/HPRC launchers, and harness integration are implemented. CPU tensor/autograd checks pass; the real joint Nemotron/WavLM GPU pilot and measured model quality remain pending. The existing classifiers and late-fusion code remain baselines, not the target model.
+**Plan status:** Implementation started on 2026-09-29. On 2026-10-02 the target perception architecture changed from separate visual/audio classifiers with late fusion to a unified audio-visual language-model path inspired by Nano-EmoX. The joint wrapper, projector/LoRA training, gradient and modality-ablation gates, fresh-process checkpoint verification, calibration/evaluation, Colab/HPRC launchers, and harness integration are implemented. CPU tests pass, and the user reported a successful real joint A100 pilot: loss 1.1745, first-step time 54.26 seconds, peak allocated VRAM 17.19 GiB, gradient/ablation checks passed, and exact reload. Re-verification after correcting ignored processor tiling options and measured held-out model quality remain pending. The existing classifiers and late-fusion code remain baselines, not the target model.
 
 ## 1. Project outcome
 

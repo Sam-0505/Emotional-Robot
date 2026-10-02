@@ -239,6 +239,26 @@ class VisualTests(unittest.TestCase):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_validation_only_baseline_saves_provenance_without_test_predictions(self):
+        from reachy_emotions.perception.unified import file_hash
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = [record("val_" + label, "actor_val", "validation", label) for label in EXPRESSION_LABELS]
+            rows.append(record("test", "actor_test", "test"))
+            manifest = root / "manifest.jsonl"
+            manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            predictions = root / "predictions.jsonl"
+            predictions.write_text("".join(json.dumps({"sample_id": row["sample_id"],
+                                                        "scores": one_hot(row["multimodal_vote"], .01)}) + "\n"
+                                            for row in rows if row["split"] == "validation"))
+            output = root / "out"
+            metrics = evaluate(manifest, predictions, predictions, output, validation_only=True)
+            self.assertEqual(metrics["fusion_multimodal_vote"]["accuracy"], 1)
+            self.assertEqual(metrics["provenance"]["manifest_sha256"], file_hash(manifest))
+            self.assertEqual(metrics["provenance"]["sample_ids"], sorted(row["sample_id"] for row in rows[:-1]))
+            self.assertTrue((output / "validation_metrics.json").exists())
+            self.assertFalse((output / "test_predictions.jsonl").exists())
+
     def test_paired_evaluation_uses_validation_then_test(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

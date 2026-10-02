@@ -2,16 +2,16 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "Usage: bash scripts/hprc_submit.sh --stage prepare|pilot|full|evaluate --dataset ABS_PATH --run-root ABS_PATH --venv ABS_PATH [options]" >&2
-  echo "Options: --visual-revision SHA --audio-revision SHA --partition NAME --account NAME --gres SPEC --time HH:MM:SS --cpus N --mem SIZE --module NAME (repeatable) --setup-env --visual-epochs N --audio-epochs N --gradient-accumulation N --seed N --zero-shot --dry-run" >&2
+  echo "Usage: bash scripts/hprc_submit.sh --stage prepare|pilot|full|evaluate|unified-pilot|unified-full|unified-evaluate|unified-test --dataset ABS_PATH --run-root ABS_PATH --venv ABS_PATH [options]" >&2
+  echo "Options: --visual-revision SHA --audio-revision SHA --partition NAME --account NAME --gres SPEC --time HH:MM:SS --cpus N --mem SIZE --module NAME (repeatable) --setup-env --visual-epochs N --audio-epochs N --unified-epochs N --unified-config PATH --gradient-accumulation N --seed N --zero-shot --dry-run" >&2
 }
 
 stage= dataset= run_root= venv= visual_revision= audio_revision= account= partition= gres= time_limit= cpus=8 mem=64G
-visual_epochs=1 audio_epochs=1 grad_accum=1 seed=42 zero_shot=0 dry_run=0 setup_env=0
+visual_epochs=1 audio_epochs=1 unified_epochs=1 unified_config= grad_accum=1 seed=42 zero_shot=0 dry_run=0 setup_env=0
 modules=()
 while (( $# )); do
   case "$1" in
-    --stage|--dataset|--run-root|--venv|--visual-revision|--audio-revision|--account|--partition|--gres|--time|--cpus|--mem|--module|--visual-epochs|--audio-epochs|--gradient-accumulation|--seed)
+    --stage|--dataset|--run-root|--venv|--visual-revision|--audio-revision|--account|--partition|--gres|--time|--cpus|--mem|--module|--visual-epochs|--audio-epochs|--unified-epochs|--unified-config|--gradient-accumulation|--seed)
       if (( $# < 2 )); then usage; exit 2; fi
       option=$1; value=$2; shift 2
       case "$option" in
@@ -21,6 +21,7 @@ while (( $# )); do
         --partition) partition=$value ;; --gres) gres=$value ;; --time) time_limit=$value ;;
         --cpus) cpus=$value ;; --mem) mem=$value ;; --module) modules+=("$value") ;;
         --visual-epochs) visual_epochs=$value ;; --audio-epochs) audio_epochs=$value ;;
+        --unified-epochs) unified_epochs=$value ;; --unified-config) unified_config=$value ;;
         --gradient-accumulation) grad_accum=$value ;; --seed) seed=$value ;;
       esac
       ;;
@@ -41,20 +42,20 @@ if [[ ! -d "$dataset" ]]; then echo "Dataset directory not found: $dataset" >&2;
 if (( ! setup_env )) && [[ ! -f "$venv/bin/activate" ]]; then
   echo "Python venv not found: $venv (use --setup-env to create and install it)" >&2; exit 2
 fi
-if [[ ! "$cpus" =~ ^[1-9][0-9]*$ || ! "$visual_epochs" =~ ^[1-9][0-9]*$ || ! "$audio_epochs" =~ ^[1-9][0-9]*$ || ! "$grad_accum" =~ ^[1-9][0-9]*$ || ! "$seed" =~ ^[0-9]+$ ]]; then
+if [[ ! "$cpus" =~ ^[1-9][0-9]*$ || ! "$visual_epochs" =~ ^[1-9][0-9]*$ || ! "$audio_epochs" =~ ^[1-9][0-9]*$ || ! "$unified_epochs" =~ ^[1-9][0-9]*$ || ! "$grad_accum" =~ ^[1-9][0-9]*$ || ! "$seed" =~ ^[0-9]+$ ]]; then
   echo "CPU count, epochs, accumulation must be positive integers; seed must be nonnegative" >&2; exit 2
 fi
 if [[ "$stage" == prepare ]]; then
   if [[ -z "$partition" ]]; then echo "Choose a Grace CPU partition with --partition (check sinfo)" >&2; exit 2; fi
   if [[ -n "$gres" ]]; then echo "Preparation is a CPU stage; omit --gres" >&2; exit 2; fi
   time_limit=${time_limit:-12:00:00}
-elif [[ "$stage" == pilot || "$stage" == full || "$stage" == evaluate ]]; then
+elif [[ "$stage" == pilot || "$stage" == full || "$stage" == evaluate || "$stage" == unified-pilot || "$stage" == unified-full || "$stage" == unified-evaluate || "$stage" == unified-test ]]; then
   if [[ ! "$visual_revision" =~ ^[0-9a-f]{40}$ || ! "$audio_revision" =~ ^[0-9a-f]{40}$ ]]; then
     echo "GPU stages require both full 40-character lowercase checkpoint commit SHAs" >&2; exit 2
   fi
   partition=${partition:-gpu}
   gres=${gres:-gpu:a100:1}
-  case "$stage" in pilot) time_limit=${time_limit:-12:00:00} ;; *) time_limit=${time_limit:-3-00:00:00} ;; esac
+  case "$stage" in pilot|unified-pilot) time_limit=${time_limit:-12:00:00} ;; *) time_limit=${time_limit:-3-00:00:00} ;; esac
 else
   echo "Unknown stage: $stage" >&2; usage; exit 2
 fi
@@ -62,6 +63,10 @@ if [[ ! "$time_limit" =~ ^([0-9]+-)?[0-9]{1,2}:[0-5][0-9]:[0-5][0-9]$ || ! "$mem
   echo "Use --time [D-]HH:MM:SS and --mem such as 64G" >&2; exit 2
 fi
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+unified_config=${unified_config:-$repo_root/configs/unified_u0.json}
+if [[ "$stage" == unified-* && ! -f "$unified_config" ]]; then
+  echo "Unified architecture config not found: $unified_config" >&2; exit 2
+fi
 for protected_path in "$dataset" "$venv" "$repo_root"; do
   if [[ "$run_root/" == "$protected_path/"* ]]; then
     echo "Run root must not be within the dataset, venv or repository: $protected_path" >&2; exit 2
@@ -118,4 +123,5 @@ mkdir -p "$run_root/logs"
 export VLA_STAGE="$stage" VLA_REPO_ROOT="$repo_root" VLA_DATASET="$dataset" VLA_RUN_ROOT="$run_root" VLA_VENV="$venv"
 export VLA_VISUAL_REVISION="$visual_revision" VLA_AUDIO_REVISION="$audio_revision"
 export VLA_VISUAL_EPOCHS="$visual_epochs" VLA_AUDIO_EPOCHS="$audio_epochs" VLA_GRAD_ACCUM="$grad_accum" VLA_SEED="$seed" VLA_ZERO_SHOT="$zero_shot"
+export VLA_UNIFIED_EPOCHS="$unified_epochs" VLA_UNIFIED_CONFIG="$unified_config"
 "${command[@]}"

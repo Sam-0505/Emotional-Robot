@@ -12,22 +12,16 @@ import json
 import os
 from pathlib import Path
 
-from reachy_emotions.perception.audio import load_audio_expert
-from reachy_emotions.perception.fusion import FusionConfig
+from reachy_emotions.perception.cli import add_perception_arguments, validate_perception_arguments, infer_from_arguments
 from reachy_emotions.perception.manifest import read_manifest
-from reachy_emotions.perception.visual import load_visual_expert
-from reachy_emotions.pipeline import infer_manifest_record, with_conversation_context
+from reachy_emotions.pipeline import with_conversation_context
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("sample_id")
-    parser.add_argument("--visual-revision", required=True)
-    parser.add_argument("--visual-adapter", type=Path, required=True)
-    parser.add_argument("--audio-revision", required=True)
-    parser.add_argument("--audio-head", type=Path, required=True)
-    parser.add_argument("--fusion-config", type=Path, required=True)
+    add_perception_arguments(parser)
     parser.add_argument("--execute", action="store_true", help="Connect to live services and allow a guarded simulator response")
     parser.add_argument("--nebius-model", help="Available Token Factory text Nemotron model ID")
     parser.add_argument("--tts-url", help="Running Magpie Speech NIM HTTP base URL")
@@ -38,6 +32,7 @@ def main() -> int:
     parser.add_argument("--transcript", help="Optional one-line supplied utterance; sent to the Nebius reasoning model")
     parser.add_argument("--recent-context", help="Optional one-line session summary; sent to the Nebius reasoning model")
     args = parser.parse_args()
+    validate_perception_arguments(parser, args, require_baseline_calibration=True)
     try:
         context = with_conversation_context({}, args.transcript, args.recent_context)
     except ValueError as exc:
@@ -60,10 +55,7 @@ def main() -> int:
             planner = NebiusPlanner(args.nebius_model)
             speech = MagpieSpeech(args.tts_url)
             robot = ReachyRobot.connect(connection_mode="localhost_only")
-        visual = load_visual_expert(args.visual_revision, args.visual_adapter)
-        audio = load_audio_expert(args.audio_revision, args.audio_head)
-        config = FusionConfig.load(args.fusion_config)
-        observation = infer_manifest_record(args.manifest, records[0], visual, audio, config)
+        observation = infer_from_arguments(args, records[0])
         observation.update(context)
         if not args.execute:
             print(json.dumps({"mode": "perception_only", "observation": observation}, indent=2))

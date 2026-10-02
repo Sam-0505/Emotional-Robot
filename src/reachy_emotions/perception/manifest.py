@@ -1,6 +1,7 @@
 """Minimal manifest adapter; every record represents one synchronized clip."""
 
 import json
+import hashlib
 from pathlib import Path
 
 from .labels import ALL_LABELS
@@ -58,3 +59,21 @@ def resolve_media_path(manifest_path, relative_path):
     except ValueError as exc:
         raise ValueError("media path escapes manifest directory: %s" % relative_path) from exc
     return candidate
+
+
+def verified_media(manifest_path, record):
+    """Resolve and hash-check the exact paired inputs, independent of targets."""
+    frames = [resolve_media_path(manifest_path, path) for path in record["frame_paths"]]
+    audio = resolve_media_path(manifest_path, record["audio_path"])
+    expected = list(record.get("frame_sha256s", [])) + [record.get("audio_sha256")]
+    if len(frames) != 3 or len(expected) != 4 or any(
+            not isinstance(value, str) or len(value) != 64 for value in expected):
+        raise ValueError("paired manifest media hashes are missing")
+    for path, wanted in zip(frames + [audio], expected):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != wanted:
+            raise ValueError("prepared media hash does not match manifest: %s" % path.name)
+    return frames, audio

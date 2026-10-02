@@ -1,16 +1,17 @@
 # Reachy Emotions Prototype
 
-An audio-visual acted-expression prototype for Reachy Mini. It pairs three face frames and the matching speech waveform from [CREMA-D](https://github.com/CheyneyComputerScience/CREMA-D), fine-tunes NVIDIA's `Llama-3.1-Nemotron-Nano-VL-8B-V1` for the visual side, trains a WavLM speech classifier, and fuses their outputs. A small **agent harness** then asks a Nemotron reasoning model for a short response, validates its proposed text, Magpie speech style, and reviewed Reachy emotion move, and runs only approved effects.
+An audio-visual acted-expression prototype for Reachy Mini. The unified U0 model pairs three face frames and matching speech from [CREMA-D](https://github.com/CheyneyComputerScience/CREMA-D). Frozen NVIDIA `Llama-3.1-Nemotron-Nano-VL-8B-V1` vision features and frozen WavLM speech features enter **one Nemotron decoder context**. A trainable audio projector and decoder LoRA learn jointly against `MultiModalVote`. Visual-only, audio-only, and late-fusion models remain comparison baselines. A small **agent harness** then asks a separate Nemotron reasoning model for a short response, validates its proposed text, Magpie speech style, and reviewed Reachy emotion move, and runs only approved effects.
 
-There is no physical robot in this project environment. The intended motion target is the official Reachy Mini MuJoCo simulator through the high-level SDK. The current repository includes an offline harness demo and live adapters, but no actual GPU training, Nebius call, Magpie deployment, or simulator run has been verified here. CREMA-D portrays *acted* expressions; this system does not determine someone's inner emotional state and is not a clinical tool.
+There is no physical robot in this project environment. The intended motion target is the official Reachy Mini MuJoCo simulator through the high-level SDK. The user verified the visual baseline's one-step LoRA training and fresh-process reload on a Colab A100 40 GB. The unified implementation has CPU tensor/autograd tests; its real GPU pilot, measured accuracy, Nebius call, Magpie deployment, and simulator run remain unverified. CREMA-D portrays *acted* expressions; this system does not determine someone's inner emotional state and is not a clinical tool.
 
 ## Architecture
 
 ```text
 CREMA-D clip -> paired face frames + 16 kHz speech
-             -> NVIDIA Nemotron VL visual expert (FaceVote)
-             -> WavLM audio expert (VoiceVote)
-             -> quality-aware fusion (MultiModalVote or unknown)
+             -> frozen Nemotron vision encoder + visual projector -> frame tokens
+             -> frozen WavLM + trainable audio projector           -> speech tokens
+             -> one Nemotron decoder with LoRA (MultiModalVote)
+             -> validation calibration + paired-quality gates -> label or unknown
              -> agent harness: capability discovery -> Nemotron proposal
                               -> deterministic guard -> Magpie WAV + Reachy move
                               -> trace, or no action
@@ -78,7 +79,76 @@ python scripts/run_pipeline.py data/cremad/manifest.jsonl SAMPLE_ID --visual-rev
 
 This verifies the prepared frame/audio hashes, loads both real experts, and marks a clip action-eligible only if fusion does not abstain, at least two of three frames contain a detected face, speech activity is present, and audio/video durations align. These are conservative prototype gates, not a validated live-quality classifier. Observations expire after ten seconds in the default runtime guard; a saved observation file is primarily for inspection. The integrated command below infers and responds in one process.
 
+## Unified audio-visual model (U0)
+
+The implementation extends the existing VLM with waveform features; stock Nemotron does not accept raw audio. It calls the language decoder with `inputs_embeds`, bypassing the stock image-only forward. Defaults in [configs/unified_u0.json](configs/unified_u0.json) use one image tile per frame, spatially pool each frame to 64 tokens, and temporally pool WavLM to 16 speech tokens before a trainable two-layer projector. The three frames remain ordered in the prompt. Frozen encoders run without gradients; only the audio projector and decoder attention LoRA train. Instruction, visual, and audio positions are excluded from the answer loss. No actor ID, filename, transcript, or crowd-vote label enters the inference prompt.
+
+The visual pooling changes the original token layout intentionally to keep the joint sequence small. Native 256 tokens per frame can be selected in a separate configuration/run if validation supports the additional cost. Gradient checkpointing is enabled by default. No automatic late-fusion fallback occurs on an out-of-memory error.
+
+The same prepared manifest is reused. Training selects only synchronized, usable training clips with an unambiguous `MultiModalVote`; FaceVote/VoiceVote do not supervise U0. Missing faces are masked, and fewer than two usable frames, poor speech, or bad synchronization prevents a joint prediction. The decoder scores six fixed JSON completions; JSON is rendered from the selected label, so this is constrained classification, not unconstrained JSON generation or speech transcription.
+
+### Colab: joint pilot with existing MyDrive data
+
+After pulling the repository, run these notebook cells:
+
+```python
+%cd /content/drive/MyDrive/reachy-av/Emotional-Robot
+%pip install -e '.[perception]'
+```
+
+```python
+%run scripts/run_unified_colab.py --stage pilot
+```
+
+The launcher uses the notebook's Python, reads `nemotron-revision.txt` and `wavlm-revision.txt`, reuses `cremad-prepared-run2/manifest.jsonl` and `huggingface-cache`, and saves everything under `MyDrive/reachy-av/unified-001`. Use `--base`, `--manifest`, or `--run-root` to override these paths. `--dry-run` prints the command without creating outputs. Logs stream into the notebook and a timestamped Drive file.
+
+The pilot performs one real optimizer step, checks nonzero finite gradients in both trainable components and no gradients in frozen weights, records feature shapes, step time and peak allocated VRAM, and checks that masking either modality affects scores. It saves `decoder_lora/`, `audio_projector.pt`, and `unified_metadata.json`, then reloads both trainable components in a fresh process and reproduces joint and ablated scores. Ablations verify wiring only; they do not establish learned reliance or accuracy. If training saved successfully but verification was interrupted, use `--stage verify`. Partial runs are never overwritten; use a new `--run-root` if needed.
+
+The equivalent portable command is:
+
+```bash
+python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output RUN/pilot --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --config configs/unified_u0.json --max-steps 1
+```
+
+### Full joint training and held-out comparison
+
+First evaluate the trained baselines with `scripts.evaluate_perception --validation-only` to save validation metrics and prediction files without scoring test inputs. Full U0 training requires those validation metrics from the same manifest and a verified joint pilot with matching revisions and architecture:
+
+```bash
+python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output RUN/full --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --config configs/unified_u0.json --max-steps 0 --epochs 2 --gradient-accumulation 4 --augment --pilot RUN/pilot --baseline-evaluation BASELINES/validation_metrics.json
+python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split validation --ablations --baseline-predictions BASELINES/validation_predictions.jsonl --output RUN/validation
+```
+
+Full training starts a fresh U0 experiment from the pinned base models. It does not resume the pilot or silently reuse baseline adapters. Epoch count is explicit; validation/model selection occurs in the separate evaluation command. Automatic early stopping, resumable optimizer checkpoints, and frozen-feature caching are not implemented. Completed artifacts, raw predictions and logs are durable; an interrupted training loop needs a fresh output directory.
+
+Only after selecting a run using validation should you evaluate test:
+
+```bash
+python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split test --calibration RUN/validation/unified_calibration.json --ablations --baseline-predictions BASELINES/test_predictions.jsonl --output RUN/test
+```
+
+Omit `--baseline-predictions` for joint metrics alone. Comparison files must cover exactly the selected split's clips. Calibration uses only validation `MultiModalVote`, binds to artifact and manifest hashes, and is never refitted on test. Reports include macro-F1, accuracy, confusion, per-actor results, abstention and optional modality-ablated metrics. Recorded inference latency includes the ablation scoring passes when `--ablations` is enabled.
+
+Colab equivalents are `--stage full --epochs 2 --baseline-evaluation PATH`, `--stage validation`, and, after selection, `--stage test` with the launcher. Pass `--baseline-predictions PATH` for matched comparisons. Do not present one-step pilot metrics as a trained model result.
+
+### Joint perception into the existing harness
+
+Both inference commands accept a joint checkpoint/calibration pair instead of the baseline model arguments:
+
+```bash
+python scripts/run_pipeline.py PREPARED/manifest.jsonl SAMPLE_ID --unified-checkpoint RUN/full --unified-calibration RUN/validation/unified_calibration.json --output RUN/observation.json
+python scripts/run_integrated.py PREPARED/manifest.jsonl SAMPLE_ID --unified-checkpoint RUN/full --unified-calibration RUN/validation/unified_calibration.json
+```
+
+The second command runs perception only; the existing explicit `--execute` and service/allowlist options enable the guarded simulator response. The joint path retains prepared-media hash checks, calibrated abstention, observation freshness, and measured paired-quality gates. Uncalibrated joint outputs cannot authorize speech or motion.
+
 ## TAMU HPRC Grace batch run
+
+The joint-model stages are `unified-pilot`, `unified-full`, `unified-evaluate` (validation), and `unified-test` (uses the saved validation calibration). They reuse the same run root's prepared manifest and checkpoint revisions; outputs go under `RUN_ROOT/unified`. Pass `--unified-config configs/unified_u0.json` and `--unified-epochs N` as needed. `unified-full` requires `RUN_ROOT/unified/pilot` to pass its checks and `RUN_ROOT/evaluation/validation_metrics.json` to contain matching baseline validation evidence. The existing `pilot`, `full`, and `evaluate` stages remain baseline workflows.
+
+```bash
+bash scripts/hprc_submit.sh --stage unified-pilot --dataset "$DATASET" --run-root "$RUN_ROOT" --venv "$VENV" --visual-revision "$VISUAL_SHA" --audio-revision "$AUDIO_SHA" --module "$PYTHON_MODULE" --module "$FFMPEG_MODULE" --dry-run
+```
 
 The [Grace batch system](https://hprc.tamu.edu/kb/User-Guides/Grace/Batch/) uses Slurm. The new [submission wrapper](scripts/hprc_submit.sh) submits separate `prepare` (CPU), `pilot` (one optimizer step per model plus paired inference), `full` (longer fine-tuning), and `evaluate` jobs through [the batch job](scripts/hprc_job.sbatch). Run the wrapper **from a Grace login node**, not the training command directly there. It does not submit later stages automatically. GPU stages default to Grace's documented `gpu` partition with one A100 (`gpu:a100:1`); preparation requires you to choose an available CPU partition with `--partition`. A100 availability and memory sufficiency are not guaranteed; inspect the pilot log before committing to a full run. The job's default CPU/memory/time requests are estimates and can be overridden on submission.
 

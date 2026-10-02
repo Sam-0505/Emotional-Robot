@@ -1,19 +1,19 @@
-# Validated Plan: Audio-Visual Emotion Perception to Reachy Mini
+# Plan: Unified Audio-Visual Emotion Perception to Reachy Mini
 
 **Track:** Physical AI
-**Plan status:** Implementation started on 2026-09-29. The priorities are audio-visual perception, Nemotron VLM fine-tuning, an agent harness, emotion-aware speech, the Reachy Mini emotions library, and the supported Reachy SDK path.
+**Plan status:** Implementation started on 2026-09-29. On 2026-10-02 the target perception architecture changed from separate visual/audio classifiers with late fusion to a unified audio-visual language-model path inspired by Nano-EmoX. The joint wrapper, projector/LoRA training, gradient and modality-ablation gates, fresh-process checkpoint verification, calibration/evaluation, Colab/HPRC launchers, and harness integration are implemented. CPU tensor/autograd checks pass; the real joint Nemotron/WavLM GPU pilot and measured model quality remain pending. The existing classifiers and late-fusion code remain baselines, not the target model.
 
 ## 1. Project outcome
 
-Build the first perception stage from synchronized audio and visual evidence derived only from CREMA-D. Fine-tune `nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1` as the visual expert, train a speech expert on the matching waveform, and combine their calibrated outputs with a small quality-aware fusion layer. Pass the fused observation to a bounded reasoning agent, which chooses what Reachy says, how the speech should sound, and which verified move from `pollen-robotics/reachy-mini-emotions-library` accompanies it.
+Build the first perception stage from synchronized audio and visual evidence derived only from CREMA-D. Extend `nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1` with a WavLM audio encoder and trainable audio-to-language projection so one decoder conditions on both face frames and the matching waveform. Train the unified model against the audiovisual `MultiModalVote` label. Keep the existing visual LoRA, WavLM classifier, and late fusion as comparison baselines. Pass the unified model's calibrated observation to a bounded reasoning agent, which chooses what Reachy says, how the speech should sound, and which verified move from `pollen-robotics/reachy-mini-emotions-library` accompanies it.
 
 ```text
 CREMA-D clip or synchronized live camera/microphone window
   -> face, speech, and synchronization quality gates
-  -> visual expert: fine-tuned NVIDIA Nemotron VLM
-  -> audio expert: frozen speech encoder + trained classifier
-  -> calibrated quality-aware audio-visual fusion
-  -> one schema-valid CREMA-D observation or unknown
+  -> Nemotron vision encoder + projector: frame tokens
+  -> frozen WavLM encoder + trainable projector: speech tokens
+  -> one Nemotron decoder with joint audio-visual conditioning
+  -> calibrated schema-valid CREMA-D observation or unknown
   -> Nemotron agent harness + conversation context
   -> move/voice discovery tools + structured response plan
   -> deterministic execution guard
@@ -38,7 +38,7 @@ The selected checkpoint is a valid rules-based choice:
 
 This is not an organizer pre-approval. Preserve the model card, exact model ID, license links, and pinned commit in the repository. If desired, request written confirmation from the Devpost organizer, but do not block the feasibility work on that response.
 
-The project must still use Nebius at runtime. The [official rules](https://nebiusglobalaihackathon.devpost.com/rules) allow either a functional Token Factory inference API call **or** deployment on Nebius AI Cloud compute. This prototype plans to fine-tune on TAMU HPRC Grace and use Token Factory for the live Nemotron reasoning agent; an HPRC-only training result or an offline mock call does not meet the Nebius requirement. Nebius compute remains optional rather than mandatory for this route.
+The project must still use Nebius at runtime. The [official rules](https://nebiusglobalaihackathon.devpost.com/rules) allow either a functional Token Factory inference API call **or** deployment on Nebius AI Cloud compute. The current fine-tuning target is Colab Pro with an A100 40 GB and persistent MyDrive artifacts; TAMU HPRC remains an alternative. Token Factory is planned for the live Nemotron reasoning agent; a training-only result or an offline mock call does not meet the Nebius requirement. Nebius compute remains optional rather than mandatory for this route.
 
 ## 3. Definition of done
 
@@ -46,10 +46,10 @@ The core prototype is complete when:
 
 1. A reproducible script converts the official CREMA-D videos and metadata into synchronized face-frame and waveform training samples.
 2. Actor identities do not cross train, validation, or test splits.
-3. Saved visual, audio, and fusion baselines are evaluated before adapter training.
-4. The visual LoRA adapter and audio classification head complete training on selected GPU compute and can be saved, reloaded, and served; the integrated application makes a real Token Factory runtime call.
-5. Visual, audio, and fused systems are compared on the same held-out actors using `FaceVote`, `VoiceVote`, and `MultiModalVote`, respectively.
-6. The fused perception output is valid JSON containing exactly one allowed expression label or `unknown`, plus measured quality and abstention metadata.
+3. Saved visual, audio, and late-fusion baselines are evaluated before unified-model training.
+4. A single audio-visual model accepts paired frame and waveform inputs, completes a joint forward/backward step, saves/reloads its adapter and audio projector, and produces reproducible output; the integrated application makes a real Token Factory runtime call.
+5. Visual, audio, late-fused, and unified systems are compared on the same held-out actors using `FaceVote`, `VoiceVote`, and `MultiModalVote` for the appropriate input modality.
+6. The unified perception output is valid JSON containing exactly one allowed expression label or `unknown`, plus measured quality and abstention metadata.
 7. Background, audio-condition, actor-leakage, and modality-disagreement audits are recorded.
 8. A Nemotron agent uses bounded move/voice discovery calls and conversation context to return a schema-valid response plan containing bounded text, a supported speech style, and an allowlisted Reachy move or `no_action`.
 9. A deterministic execution guard rejects invalid text, unavailable voices/moves, unsafe claims, cooldown violations, timeouts, and stopped states.
@@ -86,7 +86,8 @@ CREMA-D provides separate crowd judgments for what raters perceived from the fac
 |---|---|---|
 | Visual expert | Aligned face frames | `FaceVote` |
 | Audio expert | Speech waveform | `VoiceVote` |
-| Fusion layer | Visual and audio scores plus quality features | `MultiModalVote` |
+| Late-fusion baseline | Visual and audio scores plus quality features | `MultiModalVote` |
+| Unified audio-visual model | Matching face frames and speech waveform together | `MultiModalVote` |
 
 - Keep examples with one unambiguous vote as the six supervised classes for that component.
 - Map tied, missing, or low-agreement votes to `unknown`, or exclude them from fitting and retain them as a hard abstention set.
@@ -98,7 +99,7 @@ CREMA-D provides separate crowd judgments for what raters perceived from the fac
 The selected Nemotron checkpoint supports single-image inference, while CREMA-D is audiovisual video. For the first reproducible experiment:
 
 - decode each official clip once with a pinned FFmpeg version;
-- select three deterministic face frames from the middle region of each clip and process them independently through the same visual expert;
+- select three deterministic face frames from the middle region of each clip; score them independently for the visual baseline and retain their embeddings as one clip-level visual sequence for the unified model;
 - use padded, aligned face crops as the primary visual representation and retain full frames only for a documented ablation;
 - use the matching official `AudioWAV` utterance as mono 16 kHz PCM without applying normalization that erases useful prosody;
 - record voice activity, clipping, signal-to-noise, face, blur, and audio-video timing quality features;
@@ -106,7 +107,7 @@ The selected Nemotron checkpoint supports single-image inference, while CREMA-D 
 - store paths, timestamps, hashes, and preprocessing metadata rather than duplicated raw media;
 - never place frames or audio from one clip or actor in different splits.
 
-The three frame predictions are aggregated into one visual distribution before audio-visual fusion. Frames are not treated as independent dataset samples when calculating metrics.
+For the current late-fusion baseline, three frame predictions are aggregated into one visual distribution. For the unified model, frame embeddings and audio embeddings from the same clip enter one decoder context. Frames are never treated as independent dataset samples when calculating metrics.
 
 ### Actor-disjoint splits
 
@@ -155,7 +156,7 @@ fusion_target
 
 ### Training targets
 
-Use a short, fixed instruction and compact visual-model output:
+Use short, fixed instructions and compact outputs. The visual-only baseline predicts `FaceVote`; the unified audio-visual model predicts `MultiModalVote` from paired modalities:
 
 ```json
 {
@@ -169,7 +170,7 @@ The only allowed values are:
 ANG, DIS, FEA, HAP, NEU, SAD, unknown
 ```
 
-The audio expert produces logits over the same seven values. The fusion layer consumes calibrated visual and audio distributions plus quality features and emits the final distribution. Its public output is compact:
+The audio-only baseline produces logits over the same seven values against `VoiceVote`. The late-fusion baseline combines calibrated visual and audio distributions; the unified model instead conditions one decoder on both modalities. Both expose the same compact observation schema:
 
 ```json
 {
@@ -205,30 +206,31 @@ Use the exact visual model ID:
 nvidia/Llama-3.1-Nemotron-Nano-VL-8B-V1
 ```
 
-Pin the Hugging Face revision. Train from the BF16/unquantized checkpoint, not an FP4/FP8 inference checkpoint.
+Pin the Hugging Face revision. Train from the BF16/unquantized checkpoint, not an FP4/FP8 inference checkpoint. Nemotron Nano VL natively accepts images and text, not raw audio; a new audio-visual wrapper is required. This is a multimodal language model (MLLM) extension, not a claim that the stock VLM already hears speech.
 
-Use `microsoft/wavlm-base-plus` as the initial audio-encoder candidate, with masked temporal pooling and a small seven-class classification head. Pin the revision and archive the applicable code and checkpoint licenses before downloading or training. Freeze the encoder for the first run; unfreeze only its final blocks if the frozen baseline is inadequate.
+Use `microsoft/wavlm-base-plus` as the initial audio encoder. Pin the revision and archive the applicable code and checkpoint licenses before downloading or training. Keep its seven-class `VoiceVote` head as an audio-only baseline. For the unified model, pool the WavLM time sequence into a small fixed number of audio tokens and project them into the Nemotron decoder embedding dimension. Freeze WavLM initially; unfreeze final blocks only if the frozen representation is inadequate.
 
 Do not use `nvidia/Audio2Emotion-v2.2` for this classifier. Although its output classes closely match CREMA-D, its license limits it to NVIDIA Audio2Face and expressly prohibits using it or its components for standalone emotion recognition.
 
-The fusion component should initially be calibrated weighted averaging, followed only if justified by a small quality-gated MLP. Do not build a Q-Former or mixture-of-experts fusion network for the prototype.
+Reuse Nemotron's existing visual encoder and projector for each selected frame. Build a separate wrapper that places its visual tokens and the projected WavLM audio tokens into **one** decoder input, with a fixed instruction asking for `presented_expression`. The stock Nemotron forward method does not accept audio tokens, so verify the image-token layout, attention mask, label masking, and gradient flow in the wrapper rather than changing a prompt and assuming audio is used. Train the audio projector and decoder LoRA together against `MultiModalVote`, leaving the pretrained encoders frozen for the first run. A lightweight learned audio-token pooling/projector is in scope; a full Nano-EmoX Q-Former, facial third encoder, or mixture-of-experts reproduction is not.
+
+Keep calibrated weighted averaging as the **late-fusion baseline**. It is not the target architecture. Compare the unified model against it on actor-disjoint validation/test clips. Train only on training actors; use validation for calibration/model selection and test once for the final report. If A100 40 GB cannot fit the joint step, first reduce audio/frame token counts and use frozen-feature caching, gradient checkpointing, and accumulation; record any architecture change and do not silently fall back to late fusion while calling it unified.
+
+CREMA-D supervises acted-expression recognition, not empathic dialogue. The unified perception model's text output is a constrained expression label; the separate reasoning agent still composes the response. Raw WavLM features may carry prosody, but spoken **words** require a supplied transcript or ASR input to the agent. Do not claim that the CREMA-D fine-tune learned speech transcription or empathetic responses.
 
 ### Feasibility gate
 
-Before preprocessing the full dataset:
+The existing one-step visual LoRA and WavLM-head pilots validate the baselines only. Before a full unified training run:
 
-1. Load the model and processor with its required custom code.
-2. Run one CREMA-D image through the untouched model.
-3. Discover the actual module names rather than assuming a standard PEFT layout.
-4. Attach LoRA to selected language-decoder attention projections.
-5. Freeze the vision encoder for the first test.
-6. Run one forward/backward optimizer step.
-7. Save the adapter, reload it in a fresh process, and reproduce an inference result.
-8. Load the pinned audio encoder and run one 16 kHz CREMA-D utterance through it.
-9. Train one audio-head step against `VoiceVote`, save/reload it, and reproduce its logits.
-10. Pass one paired visual/audio result through the fusion implementation and reproduce its output.
+1. Verify the exact pinned Nemotron and WavLM revisions and the prepared actor-disjoint paired manifest.
+2. Load one matched clip's three frames and 16 kHz waveform; prove that both encoders produce features with the expected shape and finite values.
+3. Build one decoder input containing visual tokens, projected audio tokens, and a fixed instruction; mask modality/instruction positions out of the label loss.
+4. Run a paired forward/backward optimizer step against `MultiModalVote` and confirm gradients reach the audio projector and decoder LoRA but not frozen encoders.
+5. Save both trainable components and provenance, reload in a fresh process, and reproduce label scores.
+6. Run audio-ablated and video-ablated copies of the same clip; ensure both inputs can affect scores. This is a wiring check, not proof of learned reliance.
+7. Measure peak VRAM and step time on the available A100 before committing to a full run.
 
-If decoder-only LoRA learns JSON formatting but not visual discrimination, test the multimodal projector with a lower learning rate. Unfreeze vision layers only as a controlled later experiment because CREMA-D is small and overfitting risk is high.
+If the joint model learns JSON formatting but ignores either modality, inspect gradients and ablations, then test projector capacity or decoder LoRA targets with a controlled change. Unfreeze pretrained encoder layers only as a later experiment because CREMA-D is small and overfitting risk is high.
 
 ### Experiments
 
@@ -242,14 +244,17 @@ Run in this order, using the same actor splits throughout:
 | V3 | Decoder LoRA plus projector training | Only if V2 lacks visual gain |
 | A0 | Frozen WavLM plus trained pooling/classification head | First audio baseline |
 | A1 | Unfreeze final audio-encoder blocks | Only if A0 is inadequate |
-| F0 | Validation-calibrated weighted late fusion | Required fusion baseline |
-| F1 | Small quality-gated MLP fusion | Only if it improves held-out validation |
+| F0 | Validation-calibrated weighted late fusion | Required non-unified baseline |
+| U0 | Frozen Nemotron/WavLM encoders; train audio projector plus decoder LoRA jointly on paired clips | Target unified model |
+| U1 | Carefully unfreeze selected projector/encoder blocks | Only if U0 fails modality-use and validation checks |
 
-Use BF16 where supported, gradient checkpointing, small per-device batches, gradient accumulation, fixed seeds, early stopping, and configuration files committed to the repository. For the initial nonparametric F0 weighted average, select modality temperatures and the fusion weight on validation actors only; any later learned F1 fusion network must fit on training actors, use validation only for selection, and leave test actors untouched. Estimate Grace GPU time and storage before each full run, and Token Factory cost before live-agent testing.
+Use BF16 where supported, gradient checkpointing, small per-device batches, gradient accumulation, fixed seeds, early stopping, and configuration files committed to the repository. For F0, select modality temperatures and the fusion weight on validation actors only. U0/U1 parameters must fit on training actors, use validation only for selection, and leave test actors untouched. Estimate GPU time, peak VRAM, and storage before each full run, and Token Factory cost before live-agent testing.
+
+The current U0 trainer uses the committed `configs/unified_u0.json`, frozen encoders, one clip per microstep, a seeded schedule, gradient accumulation, and non-reentrant decoder gradient checkpointing. Default budgets are 64 spatial tokens per frame and 16 speech tokens. It trains the audio projector and LoRA against `MultiModalVote`, saves both trainable components with hashes/provenance, and verifies joint/ablated scores in a separate process. Full training requires a matching successful joint pilot and baseline validation metrics. Automatic early stopping, optimizer-state resume, and frozen-feature caching remain follow-up work; use explicit short epoch runs and validation selection for the first experiment. See [README.md](README.md#unified-audio-visual-model-u0) for the Colab, batch, and evaluation commands.
 
 ### Selection metrics
 
-Report visual results against `FaceVote`, audio results against `VoiceVote`, and fused results against `MultiModalVote`. For every applicable run report:
+Report visual results against `FaceVote`, audio results against `VoiceVote`, and both late-fused and unified results against `MultiModalVote`. For every applicable run report:
 
 - exact JSON validity;
 - overall accuracy;
@@ -257,7 +262,7 @@ Report visual results against `FaceVote`, audio results against `VoiceVote`, and
 - per-class precision, recall, and F1;
 - confusion matrix;
 - `unknown`/abstention behavior on ambiguous examples;
-- visual-only, audio-only, and fused performance on exactly the same clips;
+- visual-only, audio-only, late-fused, and unified performance on exactly the same clips;
 - performance when either modality is degraded or missing;
 - disagreement rate between modalities and fusion behavior in those cases;
 - performance by held-out actor and available demographic slices;
@@ -266,36 +271,34 @@ Report visual results against `FaceVote`, audio results against `VoiceVote`, and
 - p50/p95 inference latency;
 - component and combined latency, adapter/head size, peak VRAM, training time, and estimated cost.
 
-The primary system metric is fused macro-F1 against `MultiModalVote`. Use F1 only if it improves over both unimodal systems and F0 without materially worsening abstention, actor robustness, or latency. Otherwise report the result honestly and use the strongest validated configuration live.
+The primary system metric is unified-model macro-F1 against `MultiModalVote`, compared on the same clips with both unimodal systems and F0. Deploy U0/U1 only if it improves validation performance without materially worsening abstention, actor robustness, or latency, and its modality ablations show meaningful use of both inputs. Otherwise report the result honestly and use the strongest validated baseline live without calling it unified.
 
 ## 6. Reasoning agent, expressive speech, and Reachy integration
 
 ### Separation of responsibilities
 
-The system has five different authorities:
+The target system has three authorities:
 
-1. The visual expert reports evidence learned against `FaceVote`; it does not decide motion or speech.
-2. The audio expert reports evidence learned against `VoiceVote`; it does not decide motion or speech.
-3. Deterministic/calibrated fusion produces one observation learned against `MultiModalVote` and may abstain.
-4. The Nemotron agent uses a bounded tool-calling loop to inspect available Reachy moves and Magpie voices, then chooses a response intent, spoken reply, robot affect, speech style, and allowlisted move using the conversation context.
-5. Deterministic code validates the proposed plan, and the Reachy SDK and media API execute only validated motion and audio.
+1. The unified audio-visual perception model reports evidence learned against `MultiModalVote` and may abstain after calibration and quality checks; it does not decide motion or speech. The visual, audio, and late-fusion systems remain baselines.
+2. The separate Nemotron agent uses a bounded tool-calling loop to inspect available Reachy moves and Magpie voices, then chooses a response intent, spoken reply, robot affect, speech style, and allowlisted move using the conversation context.
+3. Deterministic code validates the proposed plan, and the Reachy SDK and media API execute only validated motion and audio.
 
 The agent replaces the fixed semantic lookup, but it does not replace the safety/execution guard. It never receives raw-joint, shell, arbitrary-file, or unrestricted network tools.
 
-Prefer a separate NVIDIA Nemotron text model for reasoning, served through Token Factory or a Nebius endpoint selected from the live catalog. This preserves the fine-tuned VLM adapter as a focused perception component. Using the VLM base with its adapter disabled is a fallback, not the initial design.
+Prefer a separate NVIDIA Nemotron text model for reasoning, served through Token Factory or a Nebius endpoint selected from the live catalog. This preserves the unified multimodal adapter as a focused perception component. Using the VLM base with its adapter disabled is a fallback, not the initial design.
 
 ### Agent inputs and output
 
 Agent inputs may include:
 
-- the fused expression observation, abstention state, modality agreement, and input-quality result;
+- the unified expression observation, abstention state, modality-ablation/quality result, and any baseline disagreement diagnostics;
 - the latest user transcript or typed message, recent exact turns, and a rolling summary of older turns;
 - the currently available Reachy moves and their descriptions;
 - the Magpie voices/styles reported by the live TTS service;
 - recent robot actions, cooldown state, and operator preferences;
 - explicit restrictions such as reduced motion, muted speech, or no response.
 
-The harness retains the conversation for the active session. It sends recent turns verbatim and summarizes older turns so the agent can respond to what was said earlier without an ever-growing prompt. The acoustic expression classifier does not produce words: typed input or a supplied transcript is sufficient for the first conversational demo, while live spoken conversation requires a separate ASR component. Transcript text is untrusted input.
+The harness retains the conversation for the active session. It sends recent turns verbatim and summarizes older turns so the agent can respond to what was said earlier without an ever-growing prompt. The unified emotion model is **not** an ASR model: typed input or a supplied transcript is sufficient for the first conversational demo, while live spoken conversation requires a separate ASR component. Transcript text is untrusted input.
 
 The agent must produce strict JSON rather than free-form tool instructions:
 
@@ -315,7 +318,7 @@ The agent must produce strict JSON rather than free-form tool instructions:
 
 ### Bounded tools
 
-The agent harness owns each response cycle: package the fresh fused observation and conversation context, let Nemotron call the discovery tools, collect its structured proposal, validate it, invoke the approved speech and motion adapters, and record a compact event trace with timings and rejection reasons. Limit the discovery loop to a small number of calls and fail closed on timeouts or invalid arguments. The agent may inspect choices and revise its proposal, but the harness alone executes speech and motion after validation.
+The agent harness owns each response cycle: package the fresh unified observation and conversation context, let Nemotron call the discovery tools, collect its structured proposal, validate it, invoke the approved speech and motion adapters, and record a compact event trace with timings and rejection reasons. Limit the discovery loop to a small number of calls and fail closed on timeouts or invalid arguments. The agent may inspect choices and revise its proposal, but the harness alone executes speech and motion after validation.
 
 Expose only narrow application tools:
 
@@ -378,29 +381,29 @@ Physical integration remains unverified until a robot is available. Before hardw
 - Pin the NVIDIA model revision and archive its license/model-card links.
 - Pin the audio-encoder revision and archive the license applicable to both code and checkpoint weights.
 - Make a documented Grace GPU job plan and storage/runtime budget, and a Token Factory runtime/cost plan.
-- Complete the one-step visual LoRA, audio-head, and paired-fusion save/reload gates.
+- Complete the one-step visual LoRA, audio-head, and paired late-fusion baseline save/reload gates; these do not count as a unified-model gate.
 - Download CREMA-D through its official repository and verify the license/readme.
 - Prepare the official Reachy MuJoCo, emotions-library, and Magpie validation steps for the later integration gate.
 
-**Gate:** Do not begin a full training run until one visual adapter step and one audio-head step survive reload and one synchronized pair passes through fusion. MuJoCo motion and Magpie emotional speech must be demonstrated before claiming integrated simulation success, but do not block perception fine-tuning.
+**Gate:** Do not begin a full unified training run until the paired-input U0 forward/backward, both-modality gradient/ablation, memory, and fresh-process reload checks pass. The existing visual/audio pilots alone are insufficient. MuJoCo motion and Magpie emotional speech must be demonstrated before claiming integrated simulation success, but do not block perception fine-tuning.
 
 ### Phase 1 — Dataset and baselines (Oct 4-9)
 
 - Implement deterministic audiovisual decoding, three-frame selection, face/speech quality checks, synchronization metadata, manifest creation, and actor splits.
 - Inspect `FaceVote`, `VoiceVote`, and `MultiModalVote` balance, disagreements, audio waveforms, and a visual sample grid manually.
-- Run V0, V1, A0, and F0 on the frozen held-out split.
+- Run V0, V1, A0, and F0 on the frozen actor-disjoint validation split; reserve test actors for the final report.
 - Commit configs, actor lists, prompt version, and dataset checks—not raw CREMA-D media.
 
 **Gate:** The paired manifest is reproducible, contains no actor or clip leakage, preserves audio-video alignment, and all unimodal/fusion baseline metrics are saved before further training.
 
 ### Phase 2 — Fine-tuning and evaluation (Oct 10-17)
 
-- Run V2 on Grace GPU compute, then recalibrate F0 using V2 with the saved A0 audio baseline.
-- Run V3, A1, or F1 only when the corresponding predefined diagnostic supports it.
-- Select using validation fused macro-F1 plus robustness and abstention checks, then evaluate the chosen configuration once on test actors.
-- Save the visual adapter, audio head, fusion parameters, training logs, confusion matrices, actor-leakage probes, costs, and model cards.
+- Keep V2/A0/F0 as measured baselines, then implement and run U0 on paired CREMA-D clips using available GPU compute.
+- Run U1 only when a predefined modality-use or validation diagnostic supports it.
+- Select using validation `MultiModalVote` macro-F1 plus robustness, ablation, and abstention checks, then evaluate the chosen configuration once on test actors.
+- Save the audio projector, decoder LoRA, pinned base revisions, baseline artifacts, training logs, confusion matrices, actor-leakage probes, costs, and model cards.
 
-**Gate:** A clean environment can reload all three perception components and reproduce the paired audio-visual evaluation command and recorded metrics.
+**Gate:** A clean environment can reload the unified adapter/projector, reproduce paired audio-visual inference and recorded metrics, and compare it with the saved baseline artifacts.
 
 ### Phase 3 — Agent-to-speech-and-motion integration (Oct 18-23)
 
@@ -413,12 +416,12 @@ Physical integration remains unverified until a robot is available. Before hardw
 - Test invalid plans, unavailable voices/moves, discovery-call limits, prompt injection, timeout, repetition, TTS failure, and simulator disconnect.
 - Add a synchronized live camera/microphone path guarded by local face, speech, and timing-quality checks.
 
-**Gate:** A synchronized camera/microphone window and a supplied conversation produce a fused observation, context-aware agent response plan, emotional speech, and synchronized recorded move; discovery calls stay bounded and every injected failure produces no unauthorized effect.
+**Gate:** A synchronized camera/microphone window and a supplied conversation produce a unified audio-visual observation, context-aware agent response plan, emotional speech, and synchronized recorded move; discovery calls stay bounded and every injected failure produces no unauthorized effect.
 
 ### Phase 4 — Demo and submission (Oct 24-29)
 
 - Record base-versus-adapter evidence and the integrated simulated reaction.
-- Show the visual and audio model IDs, Nebius execution, unimodal evidence, fused observation, agent plan, guard decision, Magpie speech, and Reachy motion.
+- Show the visual and audio encoder IDs, unified model's paired input and output, Nebius execution, unimodal/late-fusion baselines, agent plan, guard decision, Magpie speech, and Reachy motion.
 - Include at least one continuous minute of the key modules operating.
 - State visibly and verbally that the expressions are acted, Reachy is simulated, and no physical robot was tested.
 - Finish README, model card, dataset card, architecture, setup, costs, limitations, and Devpost feedback.
@@ -432,7 +435,7 @@ The following should not delay the core prototype:
 - ROS 2 packaging;
 - additional datasets;
 - unlimited conversation history and interruption/barge-in; live ASR may follow the typed/transcript path once feasible;
-- end-to-end audio-visual Q-Former or mixture-of-experts training;
+- a full Nano-EmoX reproduction with its Q-Formers, third facial encoder, and mixture-of-experts fusion;
 - identity-adversarial representation learning unless the leakage probe justifies it;
 - clinical or therapy-oriented response behavior;
 - more than the six CREMA-D labels and `unknown`;
@@ -450,10 +453,10 @@ After the core path is stable, ROS 2 can wrap the semantic label/move messages f
 | A short frame sample misses temporal expression information | Use three deterministic middle-region frames, aggregate per clip, and never count frames as independent test samples |
 | Decoder-only LoRA learns formatting but not vision | Measure against V1, then conditionally train the multimodal projector |
 | Actor leakage inflates results | Split by actor before frame extraction and test the manifest automatically |
-| Visual and audio predictions disagree | Calibrate each expert, include modality-quality features, test disagreement cases, and abstain when fusion is unreliable |
+| Unified model ignores one modality | Check audio/video ablations and gradients, compare against unimodal and late-fusion baselines, and reject a joint-learning claim without evidence of both inputs affecting scores |
 | Live audio and video are misaligned | Capture one timestamped window, monitor skew, and reject observations outside the synchronization tolerance |
 | Audio checkpoint licensing is ambiguous | Archive the exact weight license before use and replace the checkpoint if commercial/demo use is not clearly permitted |
-| Multimodal scope exceeds the schedule | Require simple late fusion first; defer Q-Formers, MoE fusion, and end-to-end joint training; start conversational context with typed or supplied transcripts before live ASR |
+| Multimodal scope exceeds the schedule or A100 memory | Limit projected audio/frame tokens, freeze encoders, cache frozen features where valid, profile one paired step, and retain F0 only as an honestly labeled fallback; start conversational context with typed or supplied transcripts before live ASR |
 | Agent produces unsafe or unsupported text | Strict schema, bounded intents, length/content checks, safe phrase fallback, and `no_action` on rejection |
 | Agent chooses an inappropriate affect or motion | Reviewed allowlists, live capability validation, scenario tests, and deterministic execution authority |
 | Transcript contains prompt injection | Treat transcript as untrusted data and prevent it from changing tools, allowlists, or system instructions |

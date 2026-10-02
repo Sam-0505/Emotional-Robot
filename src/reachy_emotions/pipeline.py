@@ -79,6 +79,34 @@ def with_conversation_context(
     return result
 
 
+def make_unified_observation(record, result, calibration=None, *, observed_at=None):
+    """Joint scores enter the same execution guard without late fusion."""
+    from .perception.unified_config import clip_quality
+    from .perception.unified_calibration import calibrated_prediction
+
+    if not record.get("sample_id") or record.get("source_dataset") != "CREMA-D":
+        raise ValueError("a CREMA-D manifest sample is required")
+    quality = clip_quality(record)
+    prediction = calibrated_prediction(result.get("scores"), calibration, quality["accepted"])
+    return {**prediction, "input_origin": "crema_d", "observation_id": str(record["sample_id"]),
+            "observed_at": time.time() if observed_at is None else observed_at,
+            "quality": "accepted" if quality["accepted"] and not prediction["abstained"] else "rejected",
+            "modality_quality": {"visual": quality["visual_quality"], "audio": quality["audio_quality"]}}
+
+
+def infer_unified_manifest_record(manifest_path, record, model, calibration):
+    from .perception.unified import file_hash, predict_unified_record
+
+    if not model.reload_verified:
+        raise ValueError("unified checkpoint must pass reload verification before integration")
+    manifest_hash = file_hash(manifest_path)
+    if manifest_hash != model.manifest_sha256:
+        raise ValueError("unified manifest differs from training actor splits")
+    calibration.check(model.checkpoint_id, manifest_hash)
+    result = predict_unified_record(model, manifest_path, record)
+    return make_unified_observation(record, result, calibration)
+
+
 def infer_manifest_record(
     manifest_path: str | Path,
     record: Mapping[str, Any],

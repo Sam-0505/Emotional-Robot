@@ -1,0 +1,9 @@
+{
+  "visual_tokens_per_frame": 64,
+  "audio_tokens": 16,
+  "projector_hidden_size": 512,
+  "lora_rank": 8,
+  "lora_alpha": 16,
+  "gradient_checkpointing": true,
+  "prompt_version": "cremad_joint_v1"
+}

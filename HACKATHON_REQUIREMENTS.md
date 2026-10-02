@@ -83,14 +83,15 @@ Grand Prize $20,000 · 2nd $10,000 · 3rd $6,000 · four track winners (one NVID
 | Implementation source | Dataset, perception, harness, integration, sample-media smoke test, and HPRC preflight implemented; live path unverified |
 | README with setup/run instructions | Added; must update with actual deployment results |
 | License file | Added (MIT project source); third-party terms remain separate |
-| Dependency lock/pins | Missing |
+| Dependency lock/pins | Transformers 4.57.3 and PEFT 0.18.0 pinned for Nemotron compatibility; a complete dependency lock is still missing |
 | Nebius Token Factory runtime call evidence | Missing; Grace training alone does not satisfy it |
-| VLM one-step fine-tuning feasibility and adapter reload | Scripted; real GPU step and reload evidence missing |
+| VLM one-step fine-tuning feasibility and adapter reload | User-reported Colab A100 baseline step and reload passed; archive its artifacts/logs |
 | Audio encoder/head feasibility, license evidence, and reload | Scripted; real model step, reload, and weight-license evidence missing |
 | Paired audio-visual fusion feasibility and calibration | Implemented and unit-tested; real paired scores missing |
+| Unified audio-visual Nemotron extension | Joint input, projector/LoRA training, gradient/ablation/reload gates, calibration/evaluation, and harness path implemented; real joint GPU gate and measured quality pending |
 | Visual/audio/fusion held-out evaluation | Evaluation command implemented; real test metrics missing |
-| CREMA-D paired manifest, alignment checks, and actor-disjoint split | Implemented and unit-tested; one official audio/video pair passed hash/header/vote checks, and official-demographics split balance is reported; full media extraction remains missing |
-| CREMA-D license and attribution record | Official terms linked in README; prepared output writes source commit and license/metadata hashes; full dataset run missing |
+| CREMA-D paired manifest, alignment checks, and actor-disjoint split | Implemented and unit-tested; user-reported Colab preparation completed in `cremad-prepared-run2`; archive its validation/provenance reports |
+| CREMA-D license and attribution record | Official terms linked in README; prepared output writes source commit and license/metadata hashes; archive the completed Colab run's records |
 | Reachy emotions-library move validation | Adapter and allowlist implemented; real library cache/move playback missing |
 | Reasoning-agent schema, tools, and scenario evaluation | Schema/guard and offline scenarios tested; live model and broader scenarios missing |
 | Magpie emotional voice discovery and TTS evidence | Adapter implemented; live voice list and synthesis missing |
@@ -101,4 +102,4 @@ Grand Prize $20,000 · 2nd $10,000 · 3rd $6,000 · four track winners (one NVID
 | Public demo video | Missing |
 | Devpost description and feedback | Not yet prepared |
 
-The repository foundations are now present, but code and mocks are not substitutes for measured deployment evidence. The Phase 0 training gate in [PROJECT.md](PROJECT.md) requires one visual-adapter step and one audio-head step with save/reload plus one real paired fusion result before full training. A real Nebius Token Factory runtime call, official Reachy emotion move in MuJoCo, and Magpie emotional speech remain separate integration/submission evidence gaps.
+The repository foundations are now present, but code and mocks are not substitutes for measured deployment evidence. The revised training gate in [PROJECT.md](PROJECT.md) keeps visual/audio/fusion results as baselines and additionally requires a real joint audio-visual optimizer step, projector/LoRA gradient checks, modality ablations, GPU profiling, and fresh-process reload before full unified training. A real Nebius Token Factory runtime call, official Reachy emotion move in MuJoCo, and Magpie emotional speech remain separate integration/submission evidence gaps.

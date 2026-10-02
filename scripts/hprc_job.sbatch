@@ -33,6 +33,34 @@ mkdir -p "$HF_HOME"
 
 manifest="$VLA_RUN_ROOT/prepared/manifest.jsonl"
 case "$VLA_STAGE" in
+  unified-pilot|unified-full|unified-evaluate|unified-test)
+    test -f "$manifest" || { echo "Prepared manifest missing: $manifest" >&2; exit 2; }
+    python scripts/check_hprc.py "$VLA_DATASET" --training \
+      --visual-revision "$VLA_VISUAL_REVISION" --audio-revision "$VLA_AUDIO_REVISION"
+    joint_root="$VLA_RUN_ROOT/unified"
+    if [[ "$VLA_STAGE" == unified-pilot || "$VLA_STAGE" == unified-full ]]; then
+      joint_args=(--manifest "$manifest" --visual-revision "$VLA_VISUAL_REVISION" \
+        --audio-revision "$VLA_AUDIO_REVISION" --config "$VLA_UNIFIED_CONFIG" --seed "$VLA_SEED")
+      if [[ "$VLA_STAGE" == unified-pilot ]]; then
+        joint_args+=(--output "$joint_root/pilot" --max-steps 1)
+      else
+        joint_args+=(--output "$joint_root/full" --max-steps 0 --epochs "$VLA_UNIFIED_EPOCHS" \
+          --gradient-accumulation "$VLA_GRAD_ACCUM" --augment --pilot "$joint_root/pilot" \
+          --baseline-evaluation "$VLA_RUN_ROOT/evaluation/validation_metrics.json")
+      fi
+      python -u -m scripts.train_unified "${joint_args[@]}"
+    else
+      joint_split=validation
+      calibration_args=()
+      if [[ "$VLA_STAGE" == unified-test ]]; then
+        joint_split=test
+        calibration_args+=(--calibration "$joint_root/validation/unified_calibration.json")
+      fi
+      python -u -m scripts.evaluate_unified --manifest "$manifest" --checkpoint "$joint_root/full" \
+        --split "$joint_split" --output "$joint_root/$joint_split" --ablations \
+        --baseline-predictions "$VLA_RUN_ROOT/evaluation/${joint_split}_predictions.jsonl" "${calibration_args[@]}"
+    fi
+    ;;
   prepare)
     if [[ -e "$VLA_RUN_ROOT/prepared" ]]; then
       echo "Prepared output already exists; use a fresh run root." >&2

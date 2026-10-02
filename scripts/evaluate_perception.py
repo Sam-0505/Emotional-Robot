@@ -5,6 +5,7 @@ or audio_quality. Scores must come from model inference, never from labels.
 """
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -38,13 +39,13 @@ def _read_predictions(path):
 
 
 def generate_predictions(manifest_path, output_dir, visual_revision, visual_adapter,
-                         audio_revision, audio_head):
+                         audio_revision, audio_head, validation_only=False):
     """Run both pinned experts on the same validation and test clips."""
     from reachy_emotions.perception.visual import load_visual_expert, predict_visual_clip
     from reachy_emotions.perception.audio import load_audio_expert, predict_audio_clip
 
     records = [row for row in read_manifest(manifest_path)
-               if row["split"] in ("validation", "test")]
+               if row["split"] in (("validation",) if validation_only else ("validation", "test"))]
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     visual_path = out / "visual_predictions.jsonl"
@@ -70,12 +71,12 @@ def generate_predictions(manifest_path, output_dir, visual_revision, visual_adap
     return visual_path, audio_path
 
 
-def generate_zero_shot_visual_predictions(manifest_path, output_dir, visual_revision):
+def generate_zero_shot_visual_predictions(manifest_path, output_dir, visual_revision, validation_only=False):
     """Run V0 from the untouched checkpoint over the paired held-out clips."""
     from reachy_emotions.perception.visual import load_visual_expert, predict_visual_clip
 
     records = [row for row in read_manifest(manifest_path)
-               if row["split"] in ("validation", "test")]
+               if row["split"] in (("validation",) if validation_only else ("validation", "test"))]
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     path = output / "visual_zero_shot_predictions.jsonl"
@@ -91,12 +92,13 @@ def generate_zero_shot_visual_predictions(manifest_path, output_dir, visual_revi
     return path
 
 
-def evaluate(manifest_path, visual_path, audio_path, output_dir, zero_shot_visual_path=None):
+def evaluate(manifest_path, visual_path, audio_path, output_dir, zero_shot_visual_path=None, validation_only=False):
     manifest = read_manifest(manifest_path)
     visual = _read_predictions(visual_path)
     audio = _read_predictions(audio_path)
     zero_shot = _read_predictions(zero_shot_visual_path) if zero_shot_visual_path else None
-    expected_ids = {row["sample_id"] for row in manifest if row["split"] in ("validation", "test")}
+    selected_splits = ("validation",) if validation_only else ("validation", "test")
+    expected_ids = {row["sample_id"] for row in manifest if row["split"] in selected_splits}
     for name, predictions in (("visual", visual), ("audio", audio), ("zero-shot visual", zero_shot)):
         if predictions is None:
             continue
@@ -106,7 +108,7 @@ def evaluate(manifest_path, visual_path, audio_path, output_dir, zero_shot_visua
                              % (name, len(missing), len(extra)))
     rows = []
     for record in manifest:
-        if record["split"] not in ("validation", "test"):
+        if record["split"] not in selected_splits:
             continue
         sample_id = record["sample_id"]
         if sample_id not in visual or sample_id not in audio:
@@ -124,8 +126,8 @@ def evaluate(manifest_path, visual_path, audio_path, output_dir, zero_shot_visua
         rows.append(row)
     validation = [row for row in rows if row["split"] == "validation"]
     test = [row for row in rows if row["split"] == "test"]
-    if not validation or not test:
-        raise ValueError("both validation and held-out test clips are required")
+    if not validation or (not validation_only and not test):
+        raise ValueError("validation and (unless validation-only) held-out test clips are required")
     visual_temperature = fit_temperature(validation, "visual_scores", "face_vote")
     audio_temperature = fit_temperature(validation, "audio_scores", "voice_vote")
     config = fit_fusion(validation, config=FusionConfig(visual_temperature=visual_temperature,
@@ -134,6 +136,16 @@ def evaluate(manifest_path, visual_path, audio_path, output_dir, zero_shot_visua
     out.mkdir(parents=True, exist_ok=True)
     config.save(out / "fusion_config.json")
     validation_scored, validation_metrics = _score_partition(validation, config, zero_shot is not None)
+    validation_metrics["provenance"] = {
+        "manifest_sha256": hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest(),
+        "selection_split": "validation",
+        "sample_ids": sorted(row["sample_id"] for row in validation),
+    }
+    if validation_only:
+        (out / "validation_predictions.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in validation_scored), encoding="utf-8")
+        (out / "validation_metrics.json").write_text(json.dumps(validation_metrics, indent=2) + "\n", encoding="utf-8")
+        return validation_metrics
     scored, metrics = _score_partition(test, config, zero_shot is not None)
     metrics.update({
         "validation_selection": validation_metrics,
@@ -200,6 +212,7 @@ def main():
     parser.add_argument("--zero-shot-visual-predictions",
                         help="Existing V0 prediction JSONL; avoids another model load")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--validation-only", action="store_true", help="Fit and report baselines without reading test inputs")
     args = parser.parse_args()
     if bool(args.visual_predictions) != bool(args.audio_predictions):
         parser.error("provide both prediction files or neither")
@@ -212,15 +225,15 @@ def main():
             parser.error("live inference requires both revisions and an audio head; visual adapter is optional for V0")
         visual_path, audio_path = generate_predictions(args.manifest, args.output,
                                                        args.visual_revision, args.visual_adapter,
-                                                       args.audio_revision, args.audio_head)
+                                                       args.audio_revision, args.audio_head, args.validation_only)
     zero_shot_path = args.zero_shot_visual_predictions
     if args.zero_shot_visual:
         if not args.visual_revision:
             parser.error("--zero-shot-visual requires --visual-revision")
         zero_shot_path = generate_zero_shot_visual_predictions(args.manifest, args.output,
-                                                               args.visual_revision)
-    metrics = evaluate(args.manifest, visual_path, audio_path, args.output, zero_shot_path)
-    print(json.dumps({"test_clips": metrics["fusion_multimodal_vote"]["clips"],
+                                                               args.visual_revision, args.validation_only)
+    metrics = evaluate(args.manifest, visual_path, audio_path, args.output, zero_shot_path, args.validation_only)
+    print(json.dumps({"validation_clips" if args.validation_only else "test_clips": metrics["fusion_multimodal_vote"]["clips"],
                       "fusion_macro_f1": metrics["fusion_multimodal_vote"]["macro_f1"],
                       "fusion_accuracy": metrics["fusion_multimodal_vote"]["accuracy"]}, indent=2))
 

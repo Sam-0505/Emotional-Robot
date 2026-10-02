@@ -101,6 +101,26 @@ class HprcScriptsTests(unittest.TestCase):
             self.assertEqual(process.returncode, 2)
             self.assertIn("--partition", process.stderr)
 
+    def test_unified_stages_have_gpu_defaults_without_dry_run_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "CREMA-D"
+            dataset.mkdir()
+            venv = root / "venv"
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin" / "activate").touch()
+            for stage in ("unified-pilot", "unified-full", "unified-evaluate", "unified-test"):
+                with self.subTest(stage=stage):
+                    run_root = root / stage
+                    process = subprocess.run(["bash", str(REPO / "scripts/hprc_submit.sh"),
+                                              "--stage", stage, "--dataset", str(dataset),
+                                              "--run-root", str(run_root), "--venv", str(venv),
+                                              "--visual-revision", SHA_A, "--audio-revision", SHA_B,
+                                              "--dry-run"], capture_output=True, text=True)
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    self.assertIn("gpu:a100:1", process.stdout)
+                    self.assertFalse(run_root.exists())
+
     def test_setup_dry_run_does_not_create_venv_or_run_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

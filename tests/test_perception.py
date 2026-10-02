@@ -7,6 +7,8 @@ import random
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from reachy_emotions.perception.fusion import (FusionConfig, aggregate_frames,
                                                 fit_fusion, fit_temperature, fuse_predictions)
@@ -204,6 +206,20 @@ class VisualTests(unittest.TestCase):
                 record("test", "actor3", "test")]
         selected = select_visual_training_records(rows)
         self.assertEqual([row["sample_id"] for row in selected], ["train"])
+
+    def test_visual_loader_overrides_flash_attention_default(self):
+        loader = Mock()
+        loaded_model = loader.from_pretrained.return_value.cuda.return_value
+        fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True),
+                                     bfloat16=object())
+        fake_transformers = SimpleNamespace(AutoModel=loader, AutoTokenizer=Mock(),
+                                            AutoImageProcessor=Mock())
+        with patch.dict("sys.modules", {"torch": fake_torch,
+                                        "transformers": fake_transformers,
+                                        "PIL": SimpleNamespace(Image=object())}):
+            model, _, _ = load_visual_expert("a" * 40)
+        self.assertIs(model, loaded_model)
+        self.assertEqual(loader.from_pretrained.call_args.kwargs["attn_implementation"], "eager")
 
     def test_pinned_revision_and_adapter_provenance(self):
         revision = "a" * 40

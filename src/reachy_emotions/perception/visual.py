@@ -50,8 +50,12 @@ def load_visual_expert(revision, adapter_path=None, training=False):
     if not torch.cuda.is_available():
         raise RuntimeError("The Nemotron visual expert requires a CUDA GPU for this implementation")
     try:
+        # The pinned config defaults to Flash Attention 2, which current
+        # Transformers rejects for this custom VLM class. Eager works with
+        # both the wrapper and its nested Llama decoder.
         model = AutoModel.from_pretrained(MODEL_ID, revision=revision, trust_remote_code=True,
-                                          torch_dtype=torch.bfloat16).cuda()
+                                          torch_dtype=torch.bfloat16,
+                                          attn_implementation="eager").cuda()
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=revision)
         processor = AutoImageProcessor.from_pretrained(MODEL_ID, revision=revision,
                                                        trust_remote_code=True, device="cuda")

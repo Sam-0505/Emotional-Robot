@@ -187,6 +187,11 @@ def training_schedule(records, seed=42, epochs=1, max_steps=None, gradient_accum
     return schedule
 
 
+def select_visual_training_records(records):
+    """Use only the training split from a complete prepared manifest."""
+    return [row for row in records if row.get("split") == "train"]
+
+
 def _score_visual_frame(model, tokenizer, processor, frame_path):
     """Real model likelihoods for six fixed answers; no label-derived scores."""
     losses = {}
@@ -207,7 +212,7 @@ def train_visual_adapter(manifest_path, output_dir, revision, max_steps=1, learn
 
     require_commit_sha(revision)
     manifest_file = Path(manifest_path)
-    records = read_manifest(manifest_file)
+    records = select_visual_training_records(read_manifest(manifest_file))
     schedule = training_schedule(records, seed=seed, epochs=epochs, max_steps=max_steps,
                                  gradient_accumulation=gradient_accumulation)
     output = Path(output_dir)

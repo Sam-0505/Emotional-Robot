@@ -16,7 +16,8 @@ from reachy_emotions.perception.metrics import evaluate_predictions
 from reachy_emotions.perception.audio import augment_waveform, load_audio_expert, verify_audio_head
 from reachy_emotions.perception.revision import require_commit_sha
 from reachy_emotions.perception.visual import (discover_decoder_targets, load_visual_expert,
-                                               training_schedule, augment_training_image)
+                                               training_schedule, augment_training_image,
+                                               select_visual_training_records)
 from scripts.evaluate_perception import evaluate
 
 
@@ -196,6 +197,13 @@ class VisualTests(unittest.TestCase):
     def test_schedule_rejects_non_train_clip(self):
         with self.assertRaisesRegex(ValueError, "non-training"):
             training_schedule([record("one", "actor", "test")])
+
+    def test_visual_trainer_selects_only_training_split(self):
+        rows = [record("train", "actor1", "train"),
+                record("validation", "actor2", "validation"),
+                record("test", "actor3", "test")]
+        selected = select_visual_training_records(rows)
+        self.assertEqual([row["sample_id"] for row in selected], ["train"])
 
     def test_pinned_revision_and_adapter_provenance(self):
         revision = "a" * 40

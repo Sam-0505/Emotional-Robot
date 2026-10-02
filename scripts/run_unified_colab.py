@@ -8,6 +8,24 @@ import shlex
 import subprocess
 import sys
 
+# Colab's %run does not add this repository's src layout to the kernel path.
+# Locate source from the script, independently of cwd or an editable install.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = str(REPO_ROOT / "src")
+if SOURCE_ROOT not in sys.path:
+    sys.path.insert(0, SOURCE_ROOT)
+
+
+def build_environment(args, repo):
+    env = os.environ.copy()
+    env["HF_HOME"] = str(args.base.resolve() / "huggingface-cache")
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(repo.resolve() / "src"), env.get("PYTHONPATH", "")) if value)
+    env["PYTHONUNBUFFERED"] = "1"
+    # The experiment is entirely PyTorch; avoid unrelated Colab TF initialization.
+    env["USE_TF"] = "0"
+    return env
+
 
 def build_command(args, repo):
     base = args.base.resolve()
@@ -82,16 +100,12 @@ def main():
     parser.add_argument("--baseline-predictions", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    repo = Path(__file__).resolve().parents[1]
+    repo = REPO_ROOT
     command, run = build_command(args, repo)
     print("Command:", shlex.join(command), flush=True)
     if args.dry_run:
         return 0
-    env = os.environ.copy()
-    env["HF_HOME"] = str(args.base / "huggingface-cache")
-    env["PYTHONUNBUFFERED"] = "1"
-    # The experiment is entirely PyTorch; avoid unrelated Colab TF initialization.
-    env["USE_TF"] = "0"
+    env = build_environment(args, repo)
     logs = run / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

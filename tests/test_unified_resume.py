@@ -68,6 +68,51 @@ class ResumeScheduleTests(unittest.TestCase):
             self.assertNotIn("--pilot", command)
             self.assertFalse(run.exists())
 
+    def test_launcher_resume_imports_source_without_site_packages_or_cwd(self):
+        from reachy_emotions.perception.unified import VISUAL_ID, AUDIO_ID
+        from reachy_emotions.perception.unified_config import UnifiedConfig
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, content in (("nemotron-revision.txt", "a" * 40), ("wavlm-revision.txt", "b" * 40),
+                                  ("manifest.jsonl", "unused dry-run manifest")):
+                (root / name).write_text(content)
+            checkpoint = root / "checkpoint"
+            (checkpoint / "decoder_lora").mkdir(parents=True)
+            names = ("decoder_lora/adapter_config.json", "decoder_lora/adapter_model.safetensors", "audio_projector.pt")
+            for name in names + ("training_state.pt",):
+                (checkpoint / name).write_bytes(b"fixture artifact; never deserialized in a dry run")
+            metadata = {"architecture": "nemotron_wavlm_joint_v1", "target": "MultiModalVote",
+                "visual_model_id": VISUAL_ID, "audio_model_id": AUDIO_ID,
+                "visual_revision": "a" * 40, "audio_revision": "b" * 40,
+                "config": UnifiedConfig().to_dict(), "training_checkpoint_version": 1,
+                "training_state_sha256": file_hash(checkpoint / "training_state.pt"),
+                "artifact_sha256s": {name: file_hash(checkpoint / name) for name in names},
+                "training_settings": {"gradient_accumulation": 4, "learning_rate": .0002, "seed": 42, "augment": True}}
+            (checkpoint / "unified_metadata.json").write_text(json.dumps(metadata))
+            repo = Path(__file__).resolve().parents[1]
+            # -I ignores PYTHONPATH/cwd and -S disables installed/editable packages.
+            result = subprocess.run([sys.executable, "-I", "-S", str(repo / "scripts/run_unified_colab.py"),
+                "--base", str(root), "--manifest", str(root / "manifest.jsonl"), "--stage", "full",
+                "--resume", str(checkpoint), "--epochs", "4", "--run-root", str(root / "continued"), "--dry-run"],
+                cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("scripts.train_unified", result.stdout)
+            self.assertFalse((root / "continued").exists())
+
+    def test_training_child_imports_source_without_editable_install(self):
+        from scripts.run_unified_colab import build_environment
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"PYTHONPATH": str(Path(directory) / "existing-source")}):
+                env = build_environment(SimpleNamespace(base=Path(directory)), repo)
+            self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(repo / "src"))
+            self.assertIn("existing-source", env["PYTHONPATH"])
+            # Same module launch as training, without any site-package/editable discovery.
+            result = subprocess.run([sys.executable, "-S", "-m", "scripts.train_unified", "--help"],
+                                    cwd=repo, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("--resume", result.stdout)
+
 
 def run_cpu_training(manifest, output, epochs, max_steps=None, resume=None, fail_at=None):
     """Run the production loop/serializer with tiny encoders, no CUDA or HF downloads."""

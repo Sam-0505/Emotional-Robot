@@ -20,7 +20,7 @@ The harness is application code, not a second model. It makes a single bounded d
 
 ## Install and local smoke test
 
-Use Python 3.10 or newer. Install FFmpeg (`ffmpeg` and `ffprobe`) for media preparation. Model training/inference needs a CUDA GPU with sufficient memory; `pip install -e '.[all]'` installs the optional Python dependencies. The Nemotron checkpoint uses custom Hugging Face model code, so pin and review its exact revision before loading it.
+Use Python 3.10 or newer. Install FFmpeg (`ffmpeg` and `ffprobe`) for media preparation. Model training/inference needs a CUDA GPU with sufficient memory; `pip install -e '.[all]'` installs the optional Python dependencies. The Nemotron checkpoint uses custom Hugging Face model code, so pin and review its exact revision before loading it. The perception dependency group pins Transformers 4.57.3 and PEFT 0.18.0 because the checkpoint's custom loader is incompatible with the Transformers 5 loading path; re-install the group after updating an older environment.
 
 ```bash
 python3 -m venv .venv

@@ -149,19 +149,31 @@ def require_unified_pilot(pilot, manifest, visual_revision, audio_revision, conf
 
 def train_unified(manifest, output, visual_revision, audio_revision, config=None, max_steps=1,
                   epochs=1, gradient_accumulation=1, learning_rate=2e-4, seed=42,
-                  augment=False, log_every=10, pilot=None, baseline_evaluation=None):
+                  augment=False, log_every=10, pilot=None, baseline_evaluation=None,
+                  resume=None, save_every=100):
     import torch
+    import numpy as np
+    from .unified_checkpoint import (read_resume_metadata, training_windows, validate_resume_plan,
+                                     save_training_checkpoint, restore_training_state,
+                                     save_model_weights, schedule_digest)
 
+    resume_root, resume_metadata = read_resume_metadata(resume) if resume else (None, None)
+    if resume_metadata:
+        evidence = resume_metadata.get("training_evidence", {})
+        pilot = pilot or evidence.get("pilot")
+        baseline_evaluation = baseline_evaluation or evidence.get("baseline_evaluation")
+        if config is None:
+            config = UnifiedConfig(**resume_metadata["config"])
     config = (config or UnifiedConfig()).validate()
     require_commit_sha(visual_revision)
     require_commit_sha(audio_revision)
-    if (epochs < 1 or gradient_accumulation < 1 or log_every < 1
+    if (epochs < 1 or gradient_accumulation < 1 or log_every < 1 or save_every < 1
             or (max_steps is not None and max_steps < 1)
             or not math.isfinite(learning_rate) or learning_rate <= 0):
         raise ValueError("invalid training schedule or learning rate")
     output = Path(output)
     if output.exists() and any(output.iterdir()):
-        raise FileExistsError("unified output directory must be empty: %s" % output)
+        raise FileExistsError("unified output directory must be empty; resume into a new output/run root: %s" % output)
     if max_steps != 1:
         if not pilot or not baseline_evaluation:
             raise ValueError("full joint training requires --pilot and --baseline-evaluation")
@@ -178,28 +190,49 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
     records = joint_training_records(read_manifest(manifest))
     if not records:
         raise ValueError("no usable paired training clips with unambiguous MultiModalVote")
-    rng, augmentation_rng = random.Random(seed), random.Random(seed + 1)
-    schedule = []
-    for _ in range(epochs):
-        order = list(records)
-        rng.shuffle(order)
-        schedule.extend(order)
-    if max_steps is not None:
-        schedule = schedule[:max_steps * gradient_accumulation]
+    augmentation_rng = random.Random(seed + 1)
+    windows = training_windows(records, epochs, seed, gradient_accumulation, max_steps)
+    settings = {"manifest_sha256": file_hash(manifest), "visual_revision": visual_revision,
+                "audio_revision": audio_revision, "config": config.to_dict(), "seed": seed,
+                "gradient_accumulation": gradient_accumulation, "learning_rate": learning_rate,
+                "augment": augment, "eligible_sample_ids_sha256": schedule_digest(records),
+                "baseline_evaluation_sha256": file_hash(baseline_evaluation) if baseline_evaluation else None}
+    initial_step = validate_resume_plan(resume_metadata, settings, windows) if resume_metadata else 0
+    random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    print("Loading joint Nemotron/WavLM model; %d paired microsteps" % len(schedule), flush=True)
-    model = load_unified(visual_revision, audio_revision, config, training=True)
+    print("Loading joint Nemotron/WavLM model; optimizer steps %d -> %d" % (initial_step, len(windows)), flush=True)
+    model = load_unified(visual_revision, audio_revision, config, checkpoint=resume_root, training=True)
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=learning_rate)
     output.mkdir(parents=True, exist_ok=True)
-    total = math.ceil(len(schedule) / gradient_accumulation)
+    total = len(windows)
     losses, durations, reports = [], [], []
+    peak_vram = 0
+    if resume_metadata:
+        history = restore_training_state(resume_root, model, optimizer, augmentation_rng, resume_metadata)
+        losses, durations, reports = history["losses"], history["step_seconds"], history["gradient_reports"]
+        peak_vram = history["peak_vram_bytes"]
+        print("Restored optimizer, RNG, history and next batch from %s" % resume_root, flush=True)
+    base_metadata = {
+        "architecture": "nemotron_wavlm_joint_v1", "target": "MultiModalVote", "config": config.to_dict(),
+        "visual_model_id": VISUAL_ID, "visual_revision": visual_revision,
+        "audio_model_id": AUDIO_ID, "audio_revision": audio_revision,
+        "manifest_sha256": settings["manifest_sha256"], "training_settings": settings,
+        "training_evidence": {"pilot": str(Path(pilot).resolve()) if pilot else None,
+                              "baseline_evaluation": str(Path(baseline_evaluation).resolve()) if baseline_evaluation else None},
+        "seed": seed, "epochs": epochs, "gradient_accumulation": gradient_accumulation,
+        "learning_rate": learning_rate, "gradient_check_passed": True,
+        "augmentation": "framing_mirror_photometric_gain_noise_bandwidth_v1" if augment else "none",
+    }
+    consumed = [row for window in windows[:initial_step] for row in window["rows"]]
     torch.cuda.reset_peak_memory_stats()
-    for start in range(0, len(schedule), gradient_accumulation):
+    for position in range(initial_step, total):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        window = schedule[start:start + gradient_accumulation]
+        item = windows[position]
+        window = item["rows"]
         torch.cuda.synchronize()
         started = time.perf_counter()
         window_loss = 0.0
@@ -219,14 +252,24 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
         torch.cuda.synchronize()
         durations.append(time.perf_counter() - started)
         losses.append(window_loss)
+        consumed.extend(window)
+        peak_vram = max(peak_vram, torch.cuda.max_memory_allocated())
         if not reports:
             reports.append(report)
         step = len(losses)
         if step == 1 or step % log_every == 0 or step == total:
             print("Joint step %d/%d loss=%.6f seconds=%.2f peak_vram_gib=%.2f" % (
                 step, total, window_loss, durations[-1], torch.cuda.max_memory_allocated() / 2**30), flush=True)
+        progress = {"optimizer_steps": step, "next_epoch": item["next_epoch"],
+                    "next_clip_index": item["next_clip_index"], "completed_microsteps": len(consumed),
+                    "schedule_sha256": schedule_digest(consumed)}
+        if step % save_every == 0 or item["next_clip_index"] == 0 or step == total:
+            path = save_training_checkpoint(output, model, optimizer, base_metadata, progress,
+                                             {"losses": losses, "step_seconds": durations,
+                                              "gradient_reports": reports, "peak_vram_bytes": peak_vram}, augmentation_rng)
+            print("Saved resumable checkpoint: %s" % path, flush=True)
     model.eval()
-    reference = schedule[0]
+    reference = consumed[0]
     features = encode_record(model, manifest, reference)
     scores = model.scores(*features, face_mask=clip_quality(reference)["faces"])
     del optimizer
@@ -235,25 +278,16 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
         changed = model.scores(*features, face_mask=clip_quality(reference)["faces"], ablation=modality)
         delta = max(abs(scores[label] - changed[label]) for label in EXPRESSION_LABELS)
         ablations[modality] = {"scores": changed, "max_score_difference": delta, "affects_scores": delta > 1e-7}
-    model.visual.language_model.save_pretrained(output / "decoder_lora", safe_serialization=True)
-    torch.save({key: value.detach().cpu() for key, value in model.audio_projector.state_dict().items()},
-               output / "audio_projector.pt")
-    artifacts = {str(path.relative_to(output)): file_hash(path)
-                 for path in sorted((output / "decoder_lora").iterdir()) if path.is_file()}
-    artifacts["audio_projector.pt"] = file_hash(output / "audio_projector.pt")
+    artifacts = save_model_weights(model, output)
     metadata = {
-        "architecture": "nemotron_wavlm_joint_v1", "target": "MultiModalVote", "config": config.to_dict(),
-        "visual_model_id": VISUAL_ID, "visual_revision": visual_revision,
-        "audio_model_id": AUDIO_ID, "audio_revision": audio_revision,
-        "manifest_sha256": file_hash(manifest), "artifact_sha256s": artifacts,
-        "seed": seed, "epochs": epochs, "optimizer_steps": len(losses),
-        "gradient_accumulation": gradient_accumulation, "learning_rate": learning_rate,
-        "augmentation": "framing_mirror_photometric_gain_noise_bandwidth_v1" if augment else "none",
-        "train_actors": sorted({str(row["actor_id"]) for row in schedule}),
-        "training_clips": len({row["sample_id"] for row in schedule}),
-        "schedule_sha256": hashlib.sha256("\n".join(row["sample_id"] for row in schedule).encode()).hexdigest(),
+        **base_metadata, "artifact_sha256s": artifacts, "optimizer_steps": len(losses),
+        "completed_epochs": progress["next_epoch"], "training_progress": progress,
+        "resumed_from": str(resume_root) if resume_root else None, "save_every": save_every,
+        "train_actors": sorted({str(row["actor_id"]) for row in consumed}),
+        "training_clips": len({row["sample_id"] for row in consumed}),
+        "schedule_sha256": schedule_digest(consumed),
         "losses": losses, "step_seconds": durations,
-        "peak_vram_bytes": torch.cuda.max_memory_allocated(), "gradient_report": reports[0],
+        "peak_vram_bytes": max(peak_vram, torch.cuda.max_memory_allocated()), "gradient_report": reports[0],
         "gradient_check_passed": True, "modality_ablations": ablations,
         "modality_wiring_passed": all(item["affects_scores"] for item in ablations.values()),
         "feature_shapes": {"visual": list(features[0].shape), "audio": list(features[1].shape)},

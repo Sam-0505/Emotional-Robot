@@ -119,7 +119,27 @@ python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output R
 python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split validation --ablations --baseline-predictions BASELINES/validation_predictions.jsonl --output RUN/validation
 ```
 
-Full training starts a fresh U0 experiment from the pinned base models. It does not resume the pilot or silently reuse baseline adapters. Epoch count is explicit; validation/model selection occurs in the separate evaluation command. Automatic early stopping, resumable optimizer checkpoints, and frozen-feature caching are not implemented. Completed artifacts, raw predictions and logs are durable; an interrupted training loop needs a fresh output directory.
+Without `--resume`, full training starts a fresh U0 experiment from the pinned base models. It does not silently reuse pilot/baseline adapters. Epoch count is explicit; validation/model selection occurs in the separate evaluation command. Automatic early stopping and frozen-feature caching are not implemented.
+
+### Continue training or recover an interrupted joint run
+
+The joint trainer saves resumable snapshots every 100 optimizer steps by default, at each epoch end, and at the final step. Change the interval with `--save-every N`. Snapshots contain decoder LoRA, the audio projector, AdamW state, Python/NumPy/Torch/CUDA and augmentation random states, exact next batch position, and accumulated loss/time history. Gradient accumulation is flushed at each epoch boundary. Completed snapshots live in `full/checkpoints/step-XXXXXXXX`; `full/last_checkpoint.json` points to the newest complete snapshot. A failed save leaves the previous pointer intact. Snapshots are retained, so budget Drive space; no older checkpoints are automatically deleted.
+
+`--epochs` and `--max-steps` are **total targets**, not additional budgets. For example, to extend a completed two-epoch run to four total epochs in Colab:
+
+```python
+%run scripts/run_unified_colab.py --stage full --epochs 4 --resume /content/drive/MyDrive/reachy-av/unified-001/full --run-root /content/drive/MyDrive/reachy-av/unified-002
+```
+
+The launcher restores the saved seed, learning rate, accumulation, augmentation, and architecture. The trainer rechecks the original pilot and baseline evidence, unless explicit paths override them. Use a **new output/run root**, including when recovering an interrupted run, to preserve prior weights, metrics and calibration. Point `--resume` at the previous training output (resolved through its pointer) or at an individual checkpoint folder. Recovery starts at the last saved optimizer boundary; an interrupted accumulation window and any unsaved steps are replayed.
+
+The equivalent direct command must retain the original settings (example: accumulation 4, default learning rate/seed, augmentation enabled):
+
+```bash
+python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output CONTINUED/full --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --max-steps 0 --epochs 4 --gradient-accumulation 4 --augment --resume RUN/full
+```
+
+Resume rejects changed model revisions, architecture, manifest, seed, accumulation, learning rate, augmentation, baseline evidence, PyTorch version, or CUDA device count. Exact CPU continuation is tested, including in a fresh process; CUDA kernel determinism is not guaranteed. New output weights must be recalibrated/evaluated on validation before test or harness use. The final inference artifacts still undergo fresh-process score verification. Earlier runs without `training_state.pt` cannot recover their missing optimizer state; this feature applies to runs made with the updated trainer. Baseline visual/audio trainers are unchanged.
 
 Only after selecting a run using validation should you evaluate test:
 

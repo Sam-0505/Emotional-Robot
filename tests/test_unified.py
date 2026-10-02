@@ -212,6 +212,14 @@ def tiny_model():
         def get_input_embeddings(self):
             return self.embeddings
 
+        def save_pretrained(self, directory, **kwargs):
+            # Torch serialization stands in for PEFT in these CPU wiring fixtures.
+            directory = Path(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "adapter_config.json").write_text(json.dumps({"fixture": "tiny_cpu_lora"}))
+            torch.save({name: value.detach().cpu() for name, value in self.state_dict().items()
+                        if "lora_" in name}, directory / "adapter_model.safetensors")
+
         def forward(self, inputs_embeds, attention_mask, labels, **kwargs):
             # A tiny causal decoder that mixes all unmasked preceding tokens.
             weights = attention_mask.unsqueeze(-1)

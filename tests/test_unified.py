@@ -176,8 +176,13 @@ class UnifiedSelectionTests(unittest.TestCase):
             self.assertFalse(run.exists())
             args.stage = "full"
             args.baseline_evaluation = None
-            with self.assertRaisesRegex(ValueError, "baseline-evaluation"):
-                build_command(args, root)
+            args.epochs = 1
+            args.gradient_accumulation = 4
+            command, run = build_command(args, root)
+            self.assertNotIn("--baseline-evaluation", command)
+            self.assertIn("--pilot", command)
+            self.assertIn(str(root.resolve() / "unified-001/full"), command)
+            self.assertFalse(run.exists())
 
 
 TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None

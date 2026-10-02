@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--pilot", help="Verified joint pilot required for more than one optimizer step")
-    parser.add_argument("--baseline-evaluation", help="Saved baseline validation_metrics.json for full runs")
+    parser.add_argument("--baseline-evaluation", help="Optional baseline validation_metrics.json; not required for training")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
     if args.verify_only:

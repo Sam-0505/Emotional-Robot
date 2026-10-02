@@ -57,7 +57,9 @@ On the HPRC worker, run `python scripts/check_hprc.py /path/to/CREMA-D` before p
 
 The default split is deterministic and approximately 64/13/14 actors for train/validation/test. It is actor-disjoint and selects from seeded candidate splits to balance the official sex, race, ethnicity, and age-band marginals; it does not guarantee equal subgroup sizes or generalization. `split_balance.json` exposes label counts, `demographic_balance.json` exposes aggregate actor counts, `dataset_attribution.json` records the official source/license hashes, and `provenance.json` records metadata hashes, split strategy/seed, and preprocessing tool versions. OpenCV is needed for face cropping; clips with no detected face are marked in the manifest, and the robot-facing pipeline refuses to treat them as valid visual evidence. Do not commit raw or prepared media.
 
-## One-step feasibility and evaluation
+## Optional baseline feasibility and evaluation
+
+The standalone visual/audio classifiers and late fusion are retained for optional comparisons. They are not part of the joint inference path and are not prerequisites for joint training. Skip this section to focus on U0.
 
 Choose and record full 40-character Hugging Face commit SHAs for both checkpoints; moving refs such as `main` are rejected. The visual path trains decoder attention LoRA against `FaceVote`; the frozen WavLM head uses `VoiceVote`. The visual script defaults to one optimizer step and verifies its saved adapter in a separate process. For the audio feasibility gate, pass `--max-steps 1` explicitly; its default is one full epoch. Inspect and archive the exact WavLM checkpoint license before downloading or training it.
 
@@ -67,7 +69,7 @@ python -m scripts.train_audio --manifest data/cremad/manifest.jsonl --output art
 python -m scripts.evaluate_perception --manifest data/cremad/manifest.jsonl --visual-revision VISUAL_COMMIT --visual-adapter artifacts/visual_adapter --audio-revision AUDIO_COMMIT --audio-head artifacts/audio_head --zero-shot-visual --output artifacts/evaluation
 ```
 
-The evaluation command predicts on validation/test actors, fits modality temperatures and the fusion weight on **validation only**, and reports held-out test metrics separately for `FaceVote`, `VoiceVote`, and `MultiModalVote`. `--zero-shot-visual` also scores the untouched NVIDIA checkpoint on the same clips; omit `--visual-adapter` to evaluate V0 by itself. It writes predictions and `fusion_config.json`. Do not treat a one-step adapter as a useful fine-tune; run and compare the full predeclared baselines in [PROJECT.md](PROJECT.md) before making performance claims. For a longer visual run, use `--max-steps 0 --epochs N --gradient-accumulation K --seed 42 --augment` with a fresh adapter output directory. The optional visual augmentation varies framing, mirror, brightness, contrast, and color **only in training**; it is not a substitute for a background-shortcut audit.
+The optional baseline evaluation command predicts on validation/test actors, fits modality temperatures and the fusion weight on **validation only**, and reports held-out test metrics separately for `FaceVote`, `VoiceVote`, and `MultiModalVote`. `--zero-shot-visual` also scores the untouched NVIDIA checkpoint on the same clips; omit `--visual-adapter` to evaluate V0 by itself. It writes predictions and `fusion_config.json`. Do not treat a one-step adapter as a useful fine-tune. Baseline comparisons are needed to claim improvement over those baselines, not to train or report the joint model's held-out accuracy. For a longer visual run, use `--max-steps 0 --epochs N --gradient-accumulation K --seed 42 --augment` with a fresh adapter output directory. The optional visual augmentation varies framing, mirror, brightness, contrast, and color **only in training**; it is not a substitute for a background-shortcut audit.
 
 The fusion weight is now selected by validation **macro-F1**, with abstentions counted as misses and both modalities assigned nonzero weight in deployable calibration. The evaluation command saves `validation_metrics.json` and `test_metrics.json` separately and rejects prediction files whose clip IDs do not exactly match the held-out manifest. For a longer audio-head run, add `--epochs N --seed 42 --augment`; augmentation is training-only mild gain, noise, and bandwidth variation. Codec augmentation remains unimplemented. The one-step feasibility runs should remain unaugmented for easier debugging.
 
@@ -116,11 +118,11 @@ python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output R
 
 ### Full joint training and held-out comparison
 
-First evaluate the trained baselines with `scripts.evaluate_perception --validation-only` to save validation metrics and prediction files without scoring test inputs. Full U0 training requires those validation metrics from the same manifest and a verified joint pilot with matching revisions and architecture:
+Full U0 training requires a verified joint pilot with matching revisions, manifest and architecture. It does **not** require standalone audio/visual training or baseline metrics. Train and then calibrate/evaluate the joint model on validation actors:
 
 ```bash
-python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output RUN/full --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --config configs/unified_u0.json --max-steps 0 --epochs 2 --gradient-accumulation 4 --augment --pilot RUN/pilot --baseline-evaluation BASELINES/validation_metrics.json
-python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split validation --ablations --baseline-predictions BASELINES/validation_predictions.jsonl --output RUN/validation
+python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output RUN/full --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --config configs/unified_u0.json --max-steps 0 --epochs 1 --gradient-accumulation 4 --augment --pilot RUN/pilot
+python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split validation --ablations --output RUN/validation
 ```
 
 Without `--resume`, full training starts a fresh U0 experiment from the pinned base models. It does not silently reuse pilot/baseline adapters. Epoch count is explicit; validation/model selection occurs in the separate evaluation command. Automatic early stopping and frozen-feature caching are not implemented.
@@ -135,7 +137,7 @@ The joint trainer saves resumable snapshots every 100 optimizer steps by default
 %run scripts/run_unified_colab.py --stage full --epochs 4 --resume /content/drive/MyDrive/reachy-av/unified-001/full --run-root /content/drive/MyDrive/reachy-av/unified-002
 ```
 
-The launcher restores the saved seed, learning rate, accumulation, augmentation, and architecture. The trainer rechecks the original pilot and baseline evidence, unless explicit paths override them. Use a **new output/run root**, including when recovering an interrupted run, to preserve prior weights, metrics and calibration. Point `--resume` at the previous training output (resolved through its pointer) or at an individual checkpoint folder. Recovery starts at the last saved optimizer boundary; an interrupted accumulation window and any unsaved steps are replayed.
+The launcher restores the saved seed, learning rate, accumulation, augmentation, and architecture. The trainer rechecks the original joint pilot, unless an explicit path overrides it. Optional baseline reports, including ones referenced by older checkpoints, are not required for resume. Use a **new output/run root**, including when recovering an interrupted run, to preserve prior weights, metrics and calibration. Point `--resume` at the previous training output (resolved through its pointer) or at an individual checkpoint folder. Recovery starts at the last saved optimizer boundary; an interrupted accumulation window and any unsaved steps are replayed.
 
 The equivalent direct command must retain the original settings (example: accumulation 4, default learning rate/seed, augmentation enabled):
 
@@ -143,17 +145,17 @@ The equivalent direct command must retain the original settings (example: accumu
 python -u -m scripts.train_unified --manifest PREPARED/manifest.jsonl --output CONTINUED/full --visual-revision VISUAL_COMMIT --audio-revision AUDIO_COMMIT --max-steps 0 --epochs 4 --gradient-accumulation 4 --augment --resume RUN/full
 ```
 
-Resume rejects changed model revisions, architecture, manifest, seed, accumulation, learning rate, augmentation, baseline evidence, PyTorch version, or CUDA device count. Exact CPU continuation is tested, including in a fresh process; CUDA kernel determinism is not guaranteed. New output weights must be recalibrated/evaluated on validation before test or harness use. The final inference artifacts still undergo fresh-process score verification. Earlier runs without `training_state.pt` cannot recover their missing optimizer state; this feature applies to runs made with the updated trainer. Baseline visual/audio trainers are unchanged.
+Resume rejects changed model revisions, architecture, manifest, seed, accumulation, learning rate, augmentation, PyTorch version, or CUDA device count. Exact CPU continuation is tested, including in a fresh process; CUDA kernel determinism is not guaranteed. New output weights must be recalibrated/evaluated on validation before test or harness use. The final inference artifacts still undergo fresh-process score verification. Earlier runs without `training_state.pt` cannot recover their missing optimizer state; this feature applies to runs made with the updated trainer. Baseline visual/audio trainers are unchanged.
 
 Only after selecting a run using validation should you evaluate test:
 
 ```bash
-python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split test --calibration RUN/validation/unified_calibration.json --ablations --baseline-predictions BASELINES/test_predictions.jsonl --output RUN/test
+python -u -m scripts.evaluate_unified --manifest PREPARED/manifest.jsonl --checkpoint RUN/full --split test --calibration RUN/validation/unified_calibration.json --ablations --output RUN/test
 ```
 
 Omit `--baseline-predictions` for joint metrics alone. Comparison files must cover exactly the selected split's clips. Calibration uses only validation `MultiModalVote`, binds to artifact and manifest hashes, and is never refitted on test. Reports include macro-F1, accuracy, confusion, per-actor results, abstention and optional modality-ablated metrics. Recorded inference latency includes the ablation scoring passes when `--ablations` is enabled.
 
-Colab equivalents are `--stage full --epochs 2 --baseline-evaluation PATH`, `--stage validation`, and, after selection, `--stage test` with the launcher. Pass `--baseline-predictions PATH` for matched comparisons. Do not present one-step pilot metrics as a trained model result.
+Colab equivalents are `--stage full --epochs 1`, `--stage validation`, and, after selection, `--stage test` with the launcher. Pass `--baseline-predictions PATH` only if you choose to make matched comparisons. `--baseline-evaluation PATH` is optional report provenance and is validated only when explicitly supplied. Do not present one-step pilot metrics as a trained model result.
 
 ### Joint perception into the existing harness
 
@@ -168,7 +170,7 @@ The second command runs perception only; the existing explicit `--execute` and s
 
 ## TAMU HPRC Grace batch run
 
-The joint-model stages are `unified-pilot`, `unified-full`, `unified-evaluate` (validation), and `unified-test` (uses the saved validation calibration). They reuse the same run root's prepared manifest and checkpoint revisions; outputs go under `RUN_ROOT/unified`. Pass `--unified-config configs/unified_u0.json` and `--unified-epochs N` as needed. `unified-full` requires `RUN_ROOT/unified/pilot` to pass its checks and `RUN_ROOT/evaluation/validation_metrics.json` to contain matching baseline validation evidence. The existing `pilot`, `full`, and `evaluate` stages remain baseline workflows.
+The joint-model stages are `unified-pilot`, `unified-full`, `unified-evaluate` (validation), and `unified-test` (uses the saved validation calibration). They reuse the same run root's prepared manifest and checkpoint revisions; outputs go under `RUN_ROOT/unified`. Pass `--unified-config configs/unified_u0.json` and `--unified-epochs N` as needed. `unified-full` requires `RUN_ROOT/unified/pilot` to pass its checks; no baseline evaluation files are required for joint training or evaluation. The existing `pilot`, `full`, and `evaluate` stages remain optional baseline workflows.
 
 ```bash
 bash scripts/hprc_submit.sh --stage unified-pilot --dataset "$DATASET" --run-root "$RUN_ROOT" --venv "$VENV" --visual-revision "$VISUAL_SHA" --audio-revision "$AUDIO_SHA" --module "$PYTHON_MODULE" --module "$FFMPEG_MODULE" --dry-run

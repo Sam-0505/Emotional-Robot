@@ -39,6 +39,16 @@ class ResumeScheduleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "training position"):
             validate_resume_plan(metadata, {"seed": 42}, windows)
 
+    def test_legacy_comparison_hash_is_not_a_resume_training_dependency(self):
+        rows = [record(str(i)) for i in range(5)]
+        windows = training_windows(rows, 2, 42, 2)
+        consumed = [row for window in windows[:2] for row in window["rows"]]
+        metadata = {"training_settings": {"seed": 42, "baseline_evaluation_sha256": "a" * 64},
+                    "progress": {"optimizer_steps": 2, "completed_microsteps": len(consumed),
+                                 "next_epoch": 0, "next_clip_index": 4,
+                                 "schedule_sha256": schedule_digest(consumed)}}
+        self.assertEqual(validate_resume_plan(metadata, {"seed": 42}, windows), 2)
+
     def test_pointer_cannot_escape_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -114,7 +124,8 @@ class ResumeScheduleTests(unittest.TestCase):
             self.assertIn("--resume", result.stdout)
 
 
-def run_cpu_training(manifest, output, epochs, max_steps=None, resume=None, fail_at=None):
+def run_cpu_training(manifest, output, epochs, max_steps=None, resume=None, fail_at=None,
+                     seed=42, with_baseline=False):
     """Run the production loop/serializer with tiny encoders, no CUDA or HF downloads."""
     import numpy as np
     import torch
@@ -155,8 +166,8 @@ def run_cpu_training(manifest, output, epochs, max_steps=None, resume=None, fail
         return train_unified(manifest, output, "a" * 40, "b" * 40, config, max_steps, epochs,
                              gradient_accumulation=2, learning_rate=.002, augment=True,
                              pilot=Path(manifest).parent / "pilot",
-                             baseline_evaluation=Path(manifest).parent / "baseline.json",
-                             resume=resume, save_every=2)
+                             baseline_evaluation=Path(manifest).parent / "baseline.json" if with_baseline else None,
+                             resume=resume, save_every=2, seed=seed)
 
 
 @unittest.skipUnless(importlib.util.find_spec("torch") is not None, "install torch for optimizer resume tests")
@@ -169,9 +180,46 @@ class ResumeTensorTests(unittest.TestCase):
         rows += [record("val", "validation")]
         self.manifest = self.root / "manifest.jsonl"
         self.manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    def write_baseline(self):
         (self.root / "baseline.json").write_text(json.dumps({
             "visual_face_vote": {}, "audio_voice_vote": {}, "fusion_multimodal_vote": {},
             "provenance": {"manifest_sha256": file_hash(self.manifest), "selection_split": "validation", "sample_ids": ["val"]}}))
+
+    def test_full_training_still_requires_a_verified_joint_pilot(self):
+        from reachy_emotions.perception.unified import train_unified
+        output = self.root / "must-not-start"
+        with patch("reachy_emotions.perception.unified.load_unified") as load:
+            with self.assertRaisesRegex(ValueError, "requires --pilot"):
+                train_unified(self.manifest, output, "a" * 40, "b" * 40, max_steps=None, epochs=1)
+            load.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_legacy_checkpoint_resumes_without_its_optional_baseline_file(self):
+        self.write_baseline()
+        partial = self.root / "partial"
+        run_cpu_training(self.manifest, partial, epochs=1, max_steps=2, with_baseline=True)
+        checkpoint, metadata = read_resume_metadata(partial)
+        previous_hash = file_hash(self.root / "baseline.json")
+        metadata["training_settings"]["baseline_evaluation_sha256"] = previous_hash
+        (checkpoint / "unified_metadata.json").write_text(json.dumps(metadata))
+        (self.root / "baseline.json").unlink()
+        continued = self.root / "continued"
+        run_cpu_training(self.manifest, continued, epochs=2, resume=partial)
+        saved = json.loads((continued / "unified_metadata.json").read_text())
+        self.assertEqual(saved["optimizer_steps"], 6)
+        self.assertNotIn("baseline_evaluation_sha256", saved["training_settings"])
+        self.assertEqual(saved["baseline_evaluation_sha256"], previous_hash)
+
+    def test_optional_report_is_validated_only_when_explicitly_supplied(self):
+        self.write_baseline()
+        report = json.loads((self.root / "baseline.json").read_text())
+        report["provenance"]["manifest_sha256"] = "c" * 64
+        (self.root / "baseline.json").write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError, "baseline validation metrics must match"):
+            run_cpu_training(self.manifest, self.root / "bad-report", epochs=1, max_steps=2, with_baseline=True)
+        self.assertFalse((self.root / "bad-report").exists())
+        run_cpu_training(self.manifest, self.root / "without-report", epochs=1, max_steps=2)
 
     def assert_weights_equal(self, left, right):
         import torch
@@ -244,9 +292,8 @@ class ResumeTensorTests(unittest.TestCase):
         run_cpu_training(self.manifest, partial, epochs=1, max_steps=2)
         with self.assertRaisesRegex(FileExistsError, "new output/run root"):
             run_cpu_training(self.manifest, partial, epochs=2, resume=partial)
-        (self.root / "baseline.json").write_text((self.root / "baseline.json").read_text() + " ")
-        with self.assertRaisesRegex(ValueError, "settings mismatch.*baseline"):
-            run_cpu_training(self.manifest, self.root / "bad", epochs=2, resume=partial)
+        with self.assertRaisesRegex(ValueError, "settings mismatch.*seed"):
+            run_cpu_training(self.manifest, self.root / "bad", epochs=2, resume=partial, seed=43)
         self.assertFalse((self.root / "bad").exists())
         checkpoint, _ = read_resume_metadata(partial)
         (checkpoint / "training_state.pt").write_bytes(b"tampered")

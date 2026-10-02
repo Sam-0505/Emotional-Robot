@@ -53,8 +53,6 @@ def build_command(args, repo):
         if args.config or not resume:
             command += ["--config", str(args.config or repo / "configs/unified_u0.json")]
         if args.stage == "full":
-            if not args.baseline_evaluation and not resume:
-                raise ValueError("full requires --baseline-evaluation from the visual/audio/fusion validation run")
             accumulation = (args.gradient_accumulation if args.gradient_accumulation is not None
                             else saved_settings.get("gradient_accumulation", 4))
             command += ["--max-steps", "0", "--epochs", str(args.epochs), "--gradient-accumulation",
@@ -96,7 +94,7 @@ def main():
     parser.add_argument("--gradient-accumulation", type=int, help="Defaults to 4, or the saved setting on resume")
     parser.add_argument("--resume", type=Path, help="Prior full output or individual training checkpoint; use a new --run-root")
     parser.add_argument("--save-every", type=int, default=100)
-    parser.add_argument("--baseline-evaluation", type=Path)
+    parser.add_argument("--baseline-evaluation", type=Path, help="Optional comparison-report provenance; not required for training")
     parser.add_argument("--baseline-predictions", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

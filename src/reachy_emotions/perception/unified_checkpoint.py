@@ -97,9 +97,13 @@ def training_windows(records, epochs, seed, accumulation, max_steps=None):
 
 
 def validate_resume_plan(metadata, settings, windows):
-    if metadata["training_settings"] != settings:
-        changed = sorted(key for key in set(metadata["training_settings"]) | set(settings)
-                         if metadata["training_settings"].get(key) != settings.get(key))
+    # Older checkpoints included an ancillary comparison-report hash here.
+    # It never affected optimization, and missing optional reports must not block resume.
+    saved = {key: value for key, value in metadata["training_settings"].items()
+             if key != "baseline_evaluation_sha256"}
+    current = {key: value for key, value in settings.items() if key != "baseline_evaluation_sha256"}
+    if saved != current:
+        changed = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
         raise ValueError("resume training settings mismatch: " + ", ".join(changed))
     progress = metadata["progress"]
     step = progress["optimizer_steps"]

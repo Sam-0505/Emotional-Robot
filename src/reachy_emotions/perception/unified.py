@@ -161,7 +161,6 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
     if resume_metadata:
         evidence = resume_metadata.get("training_evidence", {})
         pilot = pilot or evidence.get("pilot")
-        baseline_evaluation = baseline_evaluation or evidence.get("baseline_evaluation")
         if config is None:
             config = UnifiedConfig(**resume_metadata["config"])
     config = (config or UnifiedConfig()).validate()
@@ -175,9 +174,11 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
     if output.exists() and any(output.iterdir()):
         raise FileExistsError("unified output directory must be empty; resume into a new output/run root: %s" % output)
     if max_steps != 1:
-        if not pilot or not baseline_evaluation:
-            raise ValueError("full joint training requires --pilot and --baseline-evaluation")
+        if not pilot:
+            raise ValueError("full joint training requires --pilot from a verified joint run")
         require_unified_pilot(pilot, manifest, visual_revision, audio_revision, config)
+    # Comparisons are optional provenance, not inputs or a training prerequisite.
+    if baseline_evaluation:
         baselines = json.loads(Path(baseline_evaluation).read_text(encoding="utf-8"))
         if not {"visual_face_vote", "audio_voice_vote", "fusion_multimodal_vote"} <= set(baselines):
             raise ValueError("baseline evaluation must contain visual/audio/fusion validation metrics")
@@ -195,8 +196,7 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
     settings = {"manifest_sha256": file_hash(manifest), "visual_revision": visual_revision,
                 "audio_revision": audio_revision, "config": config.to_dict(), "seed": seed,
                 "gradient_accumulation": gradient_accumulation, "learning_rate": learning_rate,
-                "augment": augment, "eligible_sample_ids_sha256": schedule_digest(records),
-                "baseline_evaluation_sha256": file_hash(baseline_evaluation) if baseline_evaluation else None}
+                "augment": augment, "eligible_sample_ids_sha256": schedule_digest(records)}
     initial_step = validate_resume_plan(resume_metadata, settings, windows) if resume_metadata else 0
     random.seed(seed)
     np.random.seed(seed)
@@ -215,13 +215,19 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
         losses, durations, reports = history["losses"], history["step_seconds"], history["gradient_reports"]
         peak_vram = history["peak_vram_bytes"]
         print("Restored optimizer, RNG, history and next batch from %s" % resume_root, flush=True)
+    baseline_hash = (file_hash(baseline_evaluation) if baseline_evaluation else
+                     (resume_metadata or {}).get("baseline_evaluation_sha256",
+                         (resume_metadata or {}).get("training_settings", {}).get("baseline_evaluation_sha256")))
+    baseline_path = (str(Path(baseline_evaluation).resolve()) if baseline_evaluation else
+                     (resume_metadata or {}).get("training_evidence", {}).get("baseline_evaluation"))
     base_metadata = {
         "architecture": "nemotron_wavlm_joint_v1", "target": "MultiModalVote", "config": config.to_dict(),
         "visual_model_id": VISUAL_ID, "visual_revision": visual_revision,
         "audio_model_id": AUDIO_ID, "audio_revision": audio_revision,
         "manifest_sha256": settings["manifest_sha256"], "training_settings": settings,
         "training_evidence": {"pilot": str(Path(pilot).resolve()) if pilot else None,
-                              "baseline_evaluation": str(Path(baseline_evaluation).resolve()) if baseline_evaluation else None},
+                              "baseline_evaluation": baseline_path},
+        "baseline_evaluation_sha256": baseline_hash,
         "seed": seed, "epochs": epochs, "gradient_accumulation": gradient_accumulation,
         "learning_rate": learning_rate, "gradient_check_passed": True,
         "augmentation": "framing_mirror_photometric_gain_noise_bandwidth_v1" if augment else "none",
@@ -293,7 +299,6 @@ def train_unified(manifest, output, visual_revision, audio_revision, config=None
         "feature_shapes": {"visual": list(features[0].shape), "audio": list(features[1].shape)},
         "reload_reference": {"sample_id": reference["sample_id"], "scores": scores},
         "reload_verified": False,
-        "baseline_evaluation_sha256": file_hash(baseline_evaluation) if baseline_evaluation else None,
         "environment": {"python": sys.version, "torch": torch.__version__,
                         "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name()},
     }

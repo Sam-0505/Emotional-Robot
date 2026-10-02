@@ -20,6 +20,13 @@ SHA_B = "b" * 40
 
 
 class HprcScriptsTests(unittest.TestCase):
+    def test_joint_jobs_do_not_require_baseline_training_or_predictions(self):
+        joint_branch = (REPO / "scripts/hprc_job.sbatch").read_text().split("  prepare)", 1)[0]
+        self.assertNotIn("--baseline-evaluation", joint_branch)
+        self.assertNotIn("--baseline-predictions", joint_branch)
+        self.assertIn('--pilot "$joint_root/pilot"', joint_branch)
+        self.assertIn("--calibration", joint_branch)
+
     def test_select_paired_validation_clip(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / "manifest.jsonl"

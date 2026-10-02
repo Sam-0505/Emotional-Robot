@@ -45,8 +45,7 @@ case "$VLA_STAGE" in
         joint_args+=(--output "$joint_root/pilot" --max-steps 1)
       else
         joint_args+=(--output "$joint_root/full" --max-steps 0 --epochs "$VLA_UNIFIED_EPOCHS" \
-          --gradient-accumulation "$VLA_GRAD_ACCUM" --augment --pilot "$joint_root/pilot" \
-          --baseline-evaluation "$VLA_RUN_ROOT/evaluation/validation_metrics.json")
+          --gradient-accumulation "$VLA_GRAD_ACCUM" --augment --pilot "$joint_root/pilot")
       fi
       python -u -m scripts.train_unified "${joint_args[@]}"
     else
@@ -57,8 +56,7 @@ case "$VLA_STAGE" in
         calibration_args+=(--calibration "$joint_root/validation/unified_calibration.json")
       fi
       python -u -m scripts.evaluate_unified --manifest "$manifest" --checkpoint "$joint_root/full" \
-        --split "$joint_split" --output "$joint_root/$joint_split" --ablations \
-        --baseline-predictions "$VLA_RUN_ROOT/evaluation/${joint_split}_predictions.jsonl" "${calibration_args[@]}"
+        --split "$joint_split" --output "$joint_root/$joint_split" --ablations "${calibration_args[@]}"
     fi
     ;;
   prepare)
